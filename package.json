@@ -1,0 +1,24 @@
+{
+  "name": "404hz-borrowed-bodies",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "asset-report": "node scripts/asset-report.mjs"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "^4.4.1",
+    "@gltf-transform/extensions": "^4.4.1",
+    "@gltf-transform/functions": "^4.4.1",
+    "@types/three": "^0.185.1",
+    "draco3dgltf": "^1.5.7",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  }
+}

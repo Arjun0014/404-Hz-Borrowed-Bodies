@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>404 Hz: Borrowed Bodies</title>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="loading" class="overlay">
+      <div class="title-small">404 Hz</div>
+      <div id="loading-bar"><div id="loading-fill"></div></div>
+      <div id="loading-text">tuning signal…</div>
+    </div>
+
+    <div id="title" class="overlay hidden">
+      <h1><span class="hz">404 Hz</span><span class="sub">Borrowed Bodies</span></h1>
+      <p class="prompt">click to dive</p>
+      <p class="phase-tag">Phase 1 — Shallow Veil swimming prototype</p>
+    </div>
+
+    <div id="resume-chip" class="hidden">click to resume control</div>
+    <div id="hint" class="hidden"></div>
+    <div id="controls-help">
+      <b>W</b> swim &nbsp; <b>mouse</b> steer &nbsp; <b>shift</b> dash &nbsp;
+      <b>space/C</b> rise/sink &nbsp; <b>F3</b> stats &nbsp; <b>F4</b> quality
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

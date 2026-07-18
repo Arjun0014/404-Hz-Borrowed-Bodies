@@ -81,9 +81,8 @@ export class ShallowVeil {
   private particleMat!: ShaderMaterial;
   private particles!: Points;
   private surfaceMat!: ShaderMaterial;
-  private rayMat!: MeshBasicMaterial;
-  private rayGroup!: Group;
-  private rayMeshes: { mesh: Mesh; ox: number; oz: number }[] = [];
+  private raySpriteMat!: SpriteMaterial;
+  private raySprite!: Sprite;
   private swayMats: SwayMat[] = [];
   private markerRing!: Mesh;
   private markerLight!: PointLight;
@@ -205,90 +204,80 @@ export class ShallowVeil {
     surface.renderOrder = 2;
     this.group.add(surface);
     this.disposables.push(geo, this.surfaceMat);
-
-    // Soft sun glow seen through the surface.
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 128;
-    const ctx = canvas.getContext('2d')!;
-    const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 64);
-    grad.addColorStop(0, 'rgba(235, 252, 248, 0.95)');
-    grad.addColorStop(0.35, 'rgba(170, 230, 225, 0.4)');
-    grad.addColorStop(1, 'rgba(130, 205, 215, 0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 128, 128);
-    const glowTex = new CanvasTexture(canvas);
-    const glowMat = new SpriteMaterial({
-      map: glowTex,
-      transparent: true,
-      depthWrite: false,
-      blending: AdditiveBlending,
-      fog: false,
-    });
-    const glow = new Sprite(glowMat);
-    glow.scale.setScalar(260);
-    glow.position.set(80, WORLD.surfaceY + 25, 40);
-    this.group.add(glow);
-    this.disposables.push(glowTex, glowMat);
+    // The sun disc + glow is provided by the radial god-ray sprite
+    // (buildGodRays), so no separate glow sprite here.
   }
 
   private buildGodRays(): void {
-    // Streak texture: bright vertical shaft fading at edges and bottom.
+    // God rays as a single camera-FACING sprite anchored in the sun's
+    // direction. A sprite always faces the camera, so it can never go edge-on
+    // or change brightness as the player orbits the mouse — the previous flat
+    // planes flickered badly when looking straight up at the sun. The radial
+    // streaks emanate from the sun disc, which is exactly what you should see
+    // when directly below the sun.
+    const size = 512;
+    const c = size / 2;
     const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 256;
+    canvas.width = canvas.height = size;
     const ctx = canvas.getContext('2d')!;
-    const gx = ctx.createLinearGradient(0, 0, 128, 0);
-    gx.addColorStop(0, 'rgba(255,255,255,0)');
-    gx.addColorStop(0.5, 'rgba(255,255,255,0.9)');
-    gx.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = gx;
-    ctx.fillRect(0, 0, 128, 256);
-    const gy = ctx.createLinearGradient(0, 0, 0, 256);
-    gy.addColorStop(0, 'rgba(255,255,255,1)');
-    gy.addColorStop(0.75, 'rgba(255,255,255,0.35)');
-    gy.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = gy;
-    ctx.fillRect(0, 0, 128, 256);
-    const tex = new CanvasTexture(canvas);
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, size, size);
+    ctx.globalCompositeOperation = 'lighter';
 
-    this.rayMat = new MeshBasicMaterial({
+    // Soft central sun glow.
+    const glow = ctx.createRadialGradient(c, c, 2, c, c, c * 0.55);
+    glow.addColorStop(0, 'rgba(255,255,255,0.9)');
+    glow.addColorStop(0.25, 'rgba(220,245,240,0.35)');
+    glow.addColorStop(1, 'rgba(200,235,235,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, size, size);
+
+    // Radial streaks of varying length and softness.
+    const rand = mulberry32(515);
+    const streaks = 46;
+    for (let i = 0; i < streaks; i++) {
+      const ang = (i / streaks) * Math.PI * 2 + (rand() - 0.5) * 0.12;
+      const len = c * (0.5 + rand() * 0.5);
+      const halfWidth = 0.006 + rand() * 0.02;
+      ctx.save();
+      ctx.translate(c, c);
+      ctx.rotate(ang);
+      const g = ctx.createLinearGradient(0, 0, len, 0);
+      const a = 0.08 + rand() * 0.14;
+      g.addColorStop(0, `rgba(255,255,255,${a})`);
+      g.addColorStop(0.5, `rgba(230,248,244,${a * 0.5})`);
+      g.addColorStop(1, 'rgba(220,240,240,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(len, -len * halfWidth);
+      ctx.lineTo(len, len * halfWidth);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    const tex = new CanvasTexture(canvas);
+    this.raySpriteMat = new SpriteMaterial({
       map: tex,
       transparent: true,
       depthWrite: false,
+      depthTest: true, // real geometry (rocks/formations) can occlude the sun
       blending: AdditiveBlending,
-      side: DoubleSide,
       fog: false,
-      color: 0xbfeadd,
-      opacity: 0.0,
+      opacity: 0,
     });
-    this.disposables.push(tex, this.rayMat);
+    this.disposables.push(tex, this.raySpriteMat);
 
-    // Each ray keeps a FIXED offset from the camera and a yaw that faces the
-    // camera, so its viewing angle — and therefore its brightness — never
-    // changes when the player orbits the mouse. (Fixed-orientation planes
-    // read as "the sunlight moves with my mouse".)
-    const rand = mulberry32(515);
-    const unit = new PlaneGeometry(1, 1);
-    this.disposables.push(unit);
-    this.rayGroup = new Group();
-    this.rayGroup.renderOrder = 3;
-    this.rayMeshes = [];
-    for (let i = 0; i < 10; i++) {
-      const a = rand() * Math.PI * 2;
-      const r = 12 + rand() * 55;
-      const ox = Math.cos(a) * r;
-      const oz = Math.sin(a) * r;
-      const mesh = new Mesh(unit, this.rayMat);
-      mesh.scale.set(14 + rand() * 22, 120 + rand() * 40, 1);
-      // Constant camera-relative offset → constant facing yaw.
-      mesh.rotation.set(0, Math.atan2(-ox, -oz), (rand() - 0.5) * 0.3);
-      mesh.frustumCulled = false;
-      this.rayGroup.add(mesh);
-      this.rayMeshes.push({ mesh, ox, oz });
-    }
-    this.group.add(this.rayGroup);
+    this.raySprite = new Sprite(this.raySpriteMat);
+    this.raySprite.scale.setScalar(220);
+    // The existing dedicated sun-glow sprite (buildSurface) is now redundant
+    // with this; keep only this radial one to avoid a double-bright disc.
+    this.group.add(this.raySprite);
   }
+
+  /** Direction to the sun, matching the directional light in build(). */
+  private readonly sunDir = new Vector3(80, 150, 40).normalize();
 
   // ---- suspended particles ---------------------------------------------------
 
@@ -818,12 +807,13 @@ export class ShallowVeil {
     this.fog.color.copy(this.fogNow);
     this.hemi.intensity = 1.15 - depth01 * 0.45;
 
-    // God rays: hold a constant offset from the camera, fade with depth.
-    for (const r of this.rayMeshes) {
-      r.mesh.position.set(camera.position.x + r.ox, WORLD.surfaceY - 58, camera.position.z + r.oz);
-    }
-    const shallowness = Math.pow(1 - depth01, 1.4);
-    this.rayMat.opacity = (0.1 + Math.sin(this.time * 0.7) * 0.025) * shallowness;
+    // God-ray sprite: anchored in the sun's DIRECTION at a large fixed
+    // distance so it behaves like an infinitely distant sun (no parallax as
+    // the player swims). As a camera-facing sprite it looks identical from
+    // every view angle — no flicker when orbiting or looking straight up.
+    this.raySprite.position.copy(camera.position).addScaledVector(this.sunDir, 340);
+    const shallowness = Math.pow(1 - depth01, 1.3);
+    this.raySpriteMat.opacity = (0.6 + Math.sin(this.time * 0.6) * 0.06) * shallowness;
 
     // Marker pulse.
     const pulse = 0.5 + Math.sin(this.time * 2.2) * 0.5;

@@ -2,7 +2,6 @@ import { Vector2, type PerspectiveCamera, type Scene, type WebGLRenderer } from 
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 /**
  * Full-screen underwater look: a gentle animated refraction wobble so the whole
@@ -28,6 +27,35 @@ const UnderwaterShader = {
     uniform float uTime;
     uniform float uSpeed;
     varying vec2 vUv;
+
+    // The composer renders to a LINEAR target, so this final pass must apply
+    // tone mapping + sRGB itself (folding in what OutputPass used to do — one
+    // fewer full-screen pass). Exact three.js ACESFilmicToneMapping matrices.
+    const mat3 ACESInputMat = mat3(
+      0.59719, 0.07600, 0.02840,
+      0.35458, 0.90834, 0.13383,
+      0.04823, 0.01566, 0.83777
+    );
+    const mat3 ACESOutputMat = mat3(
+       1.60475, -0.10208, -0.00327,
+      -0.53108,  1.10813, -0.07276,
+      -0.07367, -0.00605,  1.07602
+    );
+    vec3 RRTAndODTFit(vec3 v) {
+      vec3 a = v * (v + 0.0245786) - 0.000090537;
+      vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+      return a / b;
+    }
+    vec3 acesTonemap(vec3 color) {
+      color *= 1.18; // renderer.toneMappingExposure
+      color = ACESInputMat * color;
+      color = RRTAndODTFit(color);
+      color = ACESOutputMat * color;
+      return clamp(color, 0.0, 1.0);
+    }
+    vec3 linearToSRGB(vec3 c) {
+      return mix(c * 12.92, 1.055 * pow(c, vec3(0.41666)) - 0.055, step(0.0031308, c));
+    }
 
     void main() {
       vec2 uv = vUv;
@@ -59,6 +87,8 @@ const UnderwaterShader = {
       col *= mix(0.9, 1.0, vig);
       col = mix(col, col * vec3(0.78, 0.92, 1.05), (1.0 - vig) * 0.35);
 
+      // Final output stage (replaces OutputPass): tone map, then to sRGB.
+      col = linearToSRGB(acesTonemap(col));
       gl_FragColor = vec4(col, 1.0);
     }
   `,
@@ -73,11 +103,13 @@ export class UnderwaterFx {
   constructor(renderer: WebGLRenderer, scene: Scene, camera: PerspectiveCamera) {
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, camera));
+    // Final pass: refraction/warp AND tone mapping + sRGB (see shader). Being
+    // last, the composer renders it straight to screen — no separate OutputPass.
     this.pass = new ShaderPass(UnderwaterShader);
+    // We tone-map manually in the shader; stop three injecting its own ACES
+    // functions (they'd collide with ours: "function already has a body").
+    this.pass.material.toneMapped = false;
     this.composer.addPass(this.pass);
-    // OutputPass applies tone mapping + sRGB conversion (the composer's render
-    // targets are linear, so without it the whole image renders too dark).
-    this.composer.addPass(new OutputPass());
     this.syncSize(renderer);
   }
 

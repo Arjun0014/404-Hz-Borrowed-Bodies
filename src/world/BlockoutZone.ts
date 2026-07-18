@@ -25,7 +25,6 @@ import {
 import type {
   CylinderCollider,
   DescentInfo,
-  DescentTrigger,
   TerrainLike,
   TerrainMaps,
   Zone,
@@ -267,11 +266,14 @@ export class BlockoutZone implements Zone {
   }
 
   getBounds(): ZoneBounds {
-    return { ceilingY: CEILING, playableRadius: RADIUS, hardRadius: HARD, centerX: 0, centerZ: 0 };
-  }
-
-  getDescentTrigger(): DescentTrigger {
-    return { x: 0, z: 0, radius: 26 };
+    return {
+      ceilingY: CEILING,
+      minX: -HARD,
+      maxX: HARD,
+      minZ: -HARD,
+      maxZ: HARD,
+      softMargin: HARD - RADIUS,
+    };
   }
 
   getDescentInfo(): DescentInfo {
@@ -279,6 +281,21 @@ export class BlockoutZone implements Zone {
       targetName: `Descent Blockout · Depth ${this.depth + 1}`,
       recommendedDominance: 'Hunter',
     };
+  }
+
+  /** The blockout's descent is the glowing central core. */
+  isInDescentZone(pos: Vector3): boolean {
+    return Math.hypot(pos.x, pos.z) < 26;
+  }
+
+  repelFromDescent(pos: Vector3, vel: Vector3, dt: number): boolean {
+    const d = Math.hypot(pos.x, pos.z);
+    if (d > 32) return true;
+    const nx = d > 1e-3 ? pos.x / d : 1;
+    const nz = d > 1e-3 ? pos.z / d : 0;
+    vel.x += nx * 34 * dt;
+    vel.z += nz * 34 * dt;
+    return false;
   }
 
   dispose(): void {

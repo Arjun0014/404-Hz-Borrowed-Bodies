@@ -20,20 +20,14 @@ export interface TerrainLike {
   slopeAt(x: number, z: number): number;
 }
 
-/** World clamp limits the swim controller enforces for a zone. */
+/** Axis-aligned playable box; the swim controller pushes back outside it. */
 export interface ZoneBounds {
   ceilingY: number;
-  playableRadius: number;
-  hardRadius: number;
-  centerX: number;
-  centerZ: number;
-}
-
-/** Volume that, when the player enters it, offers descent. */
-export interface DescentTrigger {
-  x: number;
-  z: number;
-  radius: number;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  softMargin: number;
 }
 
 /** Copy shown on the descent confirmation prompt. */
@@ -59,9 +53,16 @@ export interface Zone {
 
   getSpawn(out: Vector3): Vector3;
   getBounds(): ZoneBounds;
+
   /** Null when this zone has no further descent (dead-end / final). */
-  getDescentTrigger(): DescentTrigger | null;
   getDescentInfo(): DescentInfo | null;
+  /** True while the player is out in the deep / descent region. */
+  isInDescentZone(pos: Vector3): boolean;
+  /**
+   * Push a declining player back out of the descent region toward safety.
+   * Returns true once they are safely back (so the caller can stop pushing).
+   */
+  repelFromDescent(pos: Vector3, vel: Vector3, dt: number): boolean;
 
   dispose(): void;
 }

@@ -3,6 +3,7 @@ import {
   AnimationMixer,
   Box3,
   Group,
+  Material,
   Mesh,
   Object3D,
   Vector3,
@@ -35,9 +36,23 @@ export class PlayerFish {
     this.object.add(this.modelRoot);
 
     const model = gltf.scene;
-    // Skinned meshes can mis-report bounds; the player is always on screen anyway.
     model.traverse((o: Object3D) => {
-      if ((o as Mesh).isMesh) o.frustumCulled = false;
+      const mesh = o as Mesh;
+      if (!mesh.isMesh) return;
+      // Skinned meshes can mis-report bounds; the player is always on screen.
+      mesh.frustumCulled = false;
+      // The GLB exports the body as alpha-blended (transparent + depthWrite off)
+      // even though it is a solid opaque body — that makes it wash out and look
+      // see-through against the bright water surface. Force it opaque so it
+      // writes depth and never goes translucent.
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats as Material[]) {
+        if (m && m.transparent) {
+          m.transparent = false;
+          m.depthWrite = true;
+          m.needsUpdate = true;
+        }
+      }
     });
 
     // Auto-align: put the longest horizontal axis on Z (our forward), then

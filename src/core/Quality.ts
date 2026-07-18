@@ -8,8 +8,10 @@ interface QualityPreset {
 }
 
 const PRESETS: Record<QualityLevel, QualityPreset> = {
-  high: { pixelRatioCap: 2, particleScale: 1 },
-  medium: { pixelRatioCap: 1.5, particleScale: 0.55 },
+  // Cap at 1.5×: rendering at full 2× device pixels quadruples fragment work
+  // (scene + every post-process pass) for barely-visible sharpness underwater.
+  high: { pixelRatioCap: 1.5, particleScale: 1 },
+  medium: { pixelRatioCap: 1.25, particleScale: 0.55 },
   low: { pixelRatioCap: 1, particleScale: 0.3 },
 };
 

@@ -19,7 +19,6 @@ import {
   MeshStandardMaterial,
   PerspectiveCamera,
   PlaneGeometry,
-  PointLight,
   Points,
   Quaternion,
   Scene,
@@ -27,7 +26,6 @@ import {
   SphereGeometry,
   Sprite,
   SpriteMaterial,
-  TorusGeometry,
   Vector3,
   WebGLRenderer,
 } from 'three';
@@ -38,7 +36,6 @@ import { FORMATIONS, Terrain } from './Terrain';
 import type {
   CylinderCollider,
   DescentInfo,
-  DescentTrigger,
   TerrainMaps,
   Zone,
   ZoneBounds,
@@ -58,9 +55,13 @@ interface SwayMat extends MeshStandardMaterial {
   userData: { shader?: { uniforms: { uTime: { value: number } } } };
 }
 
-/** Descent marker sits on the pit rim; its XZ is the descent trigger centre. */
-const MARKER_X = WORLD.dropCenter.x - WORLD.dropRadius * 0.72;
-const MARKER_Z = WORLD.dropCenter.z;
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Half-width of the seabed decoration band on the shelf (avoids the deep). */
+const SHELF_DECO_MAX_X = WORLD.edgeX - 10;
 
 /**
  * The Shallow Veil: sunlit blue-green shelf with seagrass meadows, boulder
@@ -80,6 +81,7 @@ export class ShallowVeil implements Zone {
   private time = 0;
   private readonly fogShallow = new Color(FOG.shallowColor);
   private readonly fogDeep = new Color(FOG.deepColor);
+  private readonly fogAbyss = new Color(FOG.abyssColor);
   private readonly fogNow = new Color();
   private fog!: FogExp2;
   private hemi!: HemisphereLight;
@@ -90,8 +92,6 @@ export class ShallowVeil implements Zone {
   private raySpriteMat!: SpriteMaterial;
   private raySprite!: Sprite;
   private swayMats: SwayMat[] = [];
-  private markerRing!: Mesh;
-  private markerLight!: PointLight;
   private readonly disposables: { dispose(): void }[] = [];
 
   constructor(scene: Scene) {
@@ -105,9 +105,10 @@ export class ShallowVeil implements Zone {
     // not), so distant objects dissolve into the backdrop seamlessly.
     this.scene.background = this.fogNow.copy(this.fogShallow);
 
-    this.hemi = new HemisphereLight(0xbfe8f5, 0x33554a, 1.15);
+    // Dimmer, moodier key/fill than a bright pool — the Shallow Veil reads dark.
+    this.hemi = new HemisphereLight(0x9fd0e0, 0x2a4a44, 0.82);
     this.group.add(this.hemi);
-    const sun = new DirectionalLight(0xfff1d6, 1.9);
+    const sun = new DirectionalLight(0xffe9c8, 1.5);
     sun.position.set(80, 150, 40);
     this.group.add(sun);
 
@@ -144,7 +145,6 @@ export class ShallowVeil implements Zone {
     this.buildCoral();
     this.buildKelp();
     this.buildSilhouettes();
-    this.buildDescentMarker();
 
     this.scene.add(this.group);
   }
@@ -380,23 +380,21 @@ export class ShallowVeil implements Zone {
 
   // ---- placement helpers ------------------------------------------------------
 
-  /** Random spot avoiding the pit, the outer wall, and optionally steep ground. */
+  /** Random spot on the shelf (never out over the deep), optionally on flats. */
   private pickSpot(
     rand: () => number,
-    dropMargin: number,
+    _margin: number,
     maxSlope = 10,
   ): { x: number; z: number } {
     for (let tries = 0; tries < 60; tries++) {
-      const a = rand() * Math.PI * 2;
-      const r = Math.sqrt(rand()) * (WORLD.playableRadius - 12);
-      const x = Math.cos(a) * r;
-      const z = Math.sin(a) * r;
-      const dDrop = Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z);
-      if (dDrop < WORLD.dropRadius + dropMargin) continue;
+      const x = WORLD.minX + 16 + rand() * (SHELF_DECO_MAX_X - (WORLD.minX + 16));
+      const z = WORLD.minZ + 16 + rand() * (WORLD.maxZ - WORLD.minZ - 32);
+      const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
+      if (dSpawn < 12) continue;
       if (maxSlope < 10 && this.terrain.slopeAt(x, z) > maxSlope) continue;
       return { x, z };
     }
-    return { x: 0, z: 0 };
+    return { x: WORLD.minX + 40, z: 0 };
   }
 
   // ---- rocks -------------------------------------------------------------------
@@ -509,8 +507,7 @@ export class ShallowVeil implements Zone {
       const x = f.x + Math.cos(a) * rr;
       const z = f.z + Math.sin(a) * rr;
       const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
-      const dDrop = Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z);
-      if (dSpawn < 25 || dDrop < WORLD.dropRadius + 15 || Math.hypot(x, z) > WORLD.playableRadius) {
+      if (dSpawn < 25 || x > SHELF_DECO_MAX_X || x < WORLD.minX + 12) {
         continue;
       }
       spots.push({ x, z, height: 7 + rand() * 12, width: 1.6 + rand() * 2.2 });
@@ -569,10 +566,7 @@ export class ShallowVeil implements Zone {
       const rr = f.r * (1.35 + rand() * 0.6);
       const x = f.x + Math.cos(a) * rr;
       const z = f.z + Math.sin(a) * rr;
-      if (
-        this.terrain.slopeAt(x, z) < 0.5 &&
-        Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z) > WORLD.dropRadius + 20
-      ) {
+      if (this.terrain.slopeAt(x, z) < 0.5 && x < SHELF_DECO_MAX_X && x > WORLD.minX + 12) {
         centers.push({ x, z });
       }
     }
@@ -676,9 +670,7 @@ export class ShallowVeil implements Zone {
       const rr = f.r * (1.2 + rand() * 0.5);
       const x = f.x + Math.cos(a) * rr;
       const z = f.z + Math.sin(a) * rr;
-      if (Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z) > WORLD.dropRadius + 20) {
-        reefCenters.push({ x, z });
-      }
+      if (x < SHELF_DECO_MAX_X && x > WORLD.minX + 12) reefCenters.push({ x, z });
     }
     while (reefCenters.length < 28) reefCenters.push(this.pickSpot(rand, 30, 0.55));
 
@@ -770,45 +762,38 @@ export class ShallowVeil implements Zone {
 
   private buildSilhouettes(): void {
     const rand = mulberry32(777);
-    const mat = new MeshBasicMaterial({ color: 0x1a4050 });
-    this.disposables.push(mat);
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2 + rand() * 0.5;
-      const dropA = Math.atan2(WORLD.dropCenter.z, WORLD.dropCenter.x);
-      if (Math.abs(Math.atan2(Math.sin(a - dropA), Math.cos(a - dropA))) < 0.5) continue;
-      const geo = new ConeGeometry(35 + rand() * 40, 50 + rand() * 55, 6);
+    const near = new MeshBasicMaterial({ color: 0x123543 });
+    const deep = new MeshBasicMaterial({ color: 0x020a10 });
+    this.disposables.push(near, deep);
+
+    // Ridge-line shapes behind the enclosing walls (back + sides).
+    const wallSpots: { x: number; z: number }[] = [
+      { x: WORLD.minX - 30, z: -120 },
+      { x: WORLD.minX - 25, z: 40 },
+      { x: WORLD.minX - 20, z: 150 },
+      { x: -120, z: WORLD.minZ - 25 },
+      { x: 20, z: WORLD.minZ - 30 },
+      { x: -90, z: WORLD.maxZ + 25 },
+      { x: 30, z: WORLD.maxZ + 28 },
+    ];
+    for (const s of wallSpots) {
+      const geo = new ConeGeometry(30 + rand() * 40, 55 + rand() * 55, 6);
       this.disposables.push(geo);
-      const mesh = new Mesh(geo, mat);
-      const r = 315 + rand() * 45;
-      mesh.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+      const mesh = new Mesh(geo, near);
+      mesh.position.set(s.x, 0, s.z);
       mesh.rotation.y = rand() * Math.PI;
       this.group.add(mesh);
     }
-  }
 
-  // ---- descent marker (placeholder for Phase 2) ------------------------------------------
-
-  private buildDescentMarker(): void {
-    const rimX = MARKER_X;
-    const rimZ = MARKER_Z;
-    const y = this.terrain.heightAt(rimX, rimZ) + 3;
-
-    const geo = new TorusGeometry(4, 0.14, 10, 48);
-    geo.rotateX(Math.PI / 2);
-    const mat = new MeshBasicMaterial({ color: 0x6cf5df, transparent: true, opacity: 0.8 });
-    this.markerRing = new Mesh(geo, mat);
-    this.markerRing.position.set(rimX, y, rimZ);
-    this.group.add(this.markerRing);
-    this.disposables.push(geo, mat);
-
-    this.markerLight = new PointLight(0x5df0d8, 40, 46, 1.8);
-    this.markerLight.position.set(rimX, y + 2, rimZ);
-    this.group.add(this.markerLight);
-  }
-
-  /** World position of the descent placeholder (for proximity hints). */
-  getMarkerPosition(out: Vector3): Vector3 {
-    return out.copy(this.markerRing.position);
+    // Vast dark shapes far out in the deep (+X) — the abyss beyond the edge.
+    for (let i = 0; i < 4; i++) {
+      const geo = new ConeGeometry(45 + rand() * 60, 120 + rand() * 90, 5);
+      this.disposables.push(geo);
+      const mesh = new Mesh(geo, deep);
+      mesh.position.set(WORLD.maxX + 40 + rand() * 60, -60 + rand() * 40, (rand() - 0.5) * 320);
+      mesh.rotation.y = rand() * Math.PI;
+      this.group.add(mesh);
+    }
   }
 
   // ---- Zone interface -----------------------------------------------------
@@ -824,19 +809,34 @@ export class ShallowVeil implements Zone {
   getBounds(): ZoneBounds {
     return {
       ceilingY: WORLD.surfaceY - 0.7,
-      playableRadius: WORLD.playableRadius,
-      hardRadius: WORLD.hardRadius,
-      centerX: 0,
-      centerZ: 0,
+      minX: WORLD.minX,
+      maxX: WORLD.maxX,
+      minZ: WORLD.minZ,
+      maxZ: WORLD.maxZ,
+      softMargin: WORLD.softMargin,
     };
-  }
-
-  getDescentTrigger(): DescentTrigger {
-    return { x: MARKER_X, z: MARKER_Z, radius: 34 };
   }
 
   getDescentInfo(): DescentInfo {
     return { targetName: 'The Drowned Garden', recommendedDominance: 'Hunter' };
+  }
+
+  /** The player is out over the deep once they cross past the descent line. */
+  isInDescentZone(pos: Vector3): boolean {
+    return pos.x > WORLD.descentX;
+  }
+
+  /** Usher a declining player back over the cliff lip onto the shelf. */
+  repelFromDescent(pos: Vector3, vel: Vector3, dt: number): boolean {
+    if (pos.x <= WORLD.edgeX) return true; // safely back on the shelf
+    // Firm shoreward current: overrides forward thrust so declining actively
+    // pushes the fish out of the drop-off, not merely dismisses the prompt.
+    vel.x -= 70 * dt;
+    if (vel.x > -8) vel.x = -8;
+    // Lift them toward shelf level if they wandered down into the deep.
+    const shelfY = this.terrain.heightAt(WORLD.edgeX - 20, pos.z) + 4;
+    if (pos.y < shelfY) vel.y += 22 * dt;
+    return false;
   }
 
   // ---- frame update ------------------------------------------------------------------------
@@ -854,26 +854,30 @@ export class ShallowVeil implements Zone {
       if (mat.userData.shader) mat.userData.shader.uniforms.uTime.value = this.time;
     }
 
-    // Depth-graded water colour: darker as the camera sinks.
+    // Water darkens two ways: sinking (camera Y) AND swimming out past the
+    // cliff into the open deep (camera X beyond the edge). Whichever is
+    // stronger drives the darkness, so the drop-off reads as a very deep, dark
+    // abyss even when you just look/edge out over it from the shelf.
     // fogNow is also the scene.background instance, so mutating it updates both.
     const depth01 = Math.min(1, Math.max(0, (WORLD.surfaceY - camera.position.y) / 90));
-    this.fogNow.copy(this.fogShallow).lerp(this.fogDeep, depth01 * depth01 * 0.9 + depth01 * 0.1);
+    const overDeep = smoothstep(WORLD.edgeX - 6, WORLD.descentX + 40, camera.position.x);
+    const darkT = Math.max(depth01, overDeep);
+    this.fogNow
+      .copy(this.fogShallow)
+      .lerp(this.fogDeep, smoothstep(0, 0.62, darkT))
+      .lerp(this.fogAbyss, smoothstep(0.5, 1, darkT));
     this.fog.color.copy(this.fogNow);
-    this.hemi.intensity = 1.15 - depth01 * 0.45;
+    // Thicker, blacker fog swallows distance as the deep closes in.
+    this.fog.density = FOG.density * (1 + darkT * 1.7);
+    this.hemi.intensity = 0.82 - darkT * 0.55;
 
     // God-ray sprite: anchored in the sun's DIRECTION at a large fixed
     // distance so it behaves like an infinitely distant sun (no parallax as
     // the player swims). As a camera-facing sprite it looks identical from
     // every view angle — no flicker when orbiting or looking straight up.
     this.raySprite.position.copy(camera.position).addScaledVector(this.sunDir, 340);
-    const shallowness = Math.pow(1 - depth01, 1.3);
+    const shallowness = Math.pow(1 - darkT, 1.4);
     this.raySpriteMat.opacity = (0.5 + Math.sin(this.time * 0.6) * 0.05) * shallowness;
-
-    // Marker pulse.
-    const pulse = 0.5 + Math.sin(this.time * 2.2) * 0.5;
-    this.markerLight.intensity = 25 + pulse * 30;
-    (this.markerRing.material as MeshBasicMaterial).opacity = 0.5 + pulse * 0.45;
-    this.markerRing.rotation.y = this.time * 0.4;
   }
 
   dispose(): void {

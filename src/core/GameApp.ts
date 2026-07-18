@@ -52,6 +52,7 @@ export class GameApp {
   private transitioning = false;
   private promptShown = false;
   private promptDismissed = false;
+  private repelling = false;
 
   constructor(container: HTMLElement) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -211,7 +212,15 @@ export class GameApp {
 
     if (!this.transitioning && this.started) {
       this.controller.update(dt);
-      this.checkDescent();
+      if (this.repelling) {
+        const done = this.zones.current.repelFromDescent(this.controller.pos, this.controller.vel, dt);
+        if (done) {
+          this.repelling = false;
+          this.promptDismissed = false;
+        }
+      } else {
+        this.checkDescent();
+      }
     }
 
     const speed = this.transitioning ? 0 : this.controller.speed01;
@@ -236,12 +245,8 @@ export class GameApp {
   // ---- descent flow --------------------------------------------------------
 
   private checkDescent(): void {
-    const trig = this.zones.current.getDescentTrigger();
-    if (!trig) return;
-    const dx = this.controller.pos.x - trig.x;
-    const dz = this.controller.pos.z - trig.z;
-    const inside = Math.hypot(dx, dz) < trig.radius;
-    if (inside) {
+    const inZone = this.zones.current.isInDescentZone(this.controller.pos);
+    if (inZone) {
       if (!this.promptShown && !this.promptDismissed) this.showDescentPrompt();
     } else {
       this.promptDismissed = false;
@@ -267,6 +272,7 @@ export class GameApp {
   private cancelDescent(): void {
     this.hideDescentPrompt();
     this.promptDismissed = true; // don't re-show until the player leaves the trigger
+    this.repelling = true; // declining actively pushes the fish back onto the shelf
   }
 
   private async doDescend(): Promise<void> {

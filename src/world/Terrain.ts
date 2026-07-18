@@ -68,25 +68,25 @@ export interface Formation {
 
 /**
  * Large formations baked into the heightfield so player AND camera collision
- * work automatically. Mesas are broad flat-top hills to swim over; pinnacles
- * are steep towers to weave between; ridges form walls to cross or go around.
- * Kept clear of the spawn (-170,-55), the pit (225,10 r85), and the outer wall.
+ * work automatically. All sit on the shelf (x < edgeX); the open deep beyond
+ * the cliff is kept clear. Mesas are broad flat-top hills to swim over;
+ * pinnacles are steep towers to weave between.
  */
 export const FORMATIONS: Formation[] = [
-  { x: -40, z: -120, r: 27, h: 13, kind: 'mesa' },
-  { x: 80, z: -95, r: 31, h: 15, kind: 'mesa' },
-  { x: -105, z: 60, r: 25, h: 12, kind: 'mesa' },
-  { x: 30, z: 125, r: 29, h: 14, kind: 'mesa' },
-  { x: 150, z: -155, r: 23, h: 12, kind: 'mesa' },
-  { x: -195, z: 115, r: 26, h: 13, kind: 'mesa' },
-  { x: -10, z: -30, r: 10, h: 20, kind: 'pinnacle' },
-  { x: 62, z: 32, r: 11, h: 22, kind: 'pinnacle' },
-  { x: -72, z: -58, r: 9, h: 18, kind: 'pinnacle' },
-  { x: 118, z: 82, r: 10, h: 21, kind: 'pinnacle' },
-  { x: -140, z: -150, r: 11, h: 19, kind: 'pinnacle' },
-  { x: 2, z: -190, r: 10, h: 18, kind: 'pinnacle' },
-  { x: 92, z: 172, r: 11, h: 20, kind: 'pinnacle' },
-  { x: -58, z: 172, r: 9, h: 17, kind: 'pinnacle' },
+  { x: -60, z: -120, r: 27, h: 13, kind: 'mesa' },
+  { x: -150, z: -60, r: 31, h: 15, kind: 'mesa' },
+  { x: -200, z: 70, r: 25, h: 12, kind: 'mesa' },
+  { x: -95, z: 115, r: 29, h: 14, kind: 'mesa' },
+  { x: 8, z: -150, r: 23, h: 12, kind: 'mesa' },
+  { x: -30, z: 55, r: 26, h: 13, kind: 'mesa' },
+  { x: -110, z: -10, r: 10, h: 20, kind: 'pinnacle' },
+  { x: 22, z: 18, r: 11, h: 22, kind: 'pinnacle' },
+  { x: -175, z: 140, r: 9, h: 18, kind: 'pinnacle' },
+  { x: -215, z: -130, r: 10, h: 21, kind: 'pinnacle' },
+  { x: 32, z: 128, r: 11, h: 19, kind: 'pinnacle' },
+  { x: -60, z: 175, r: 10, h: 18, kind: 'pinnacle' },
+  { x: -132, z: 175, r: 9, h: 17, kind: 'pinnacle' },
+  { x: -42, z: -55, r: 11, h: 20, kind: 'pinnacle' },
 ];
 
 interface Ridge {
@@ -99,10 +99,21 @@ interface Ridge {
 }
 
 const RIDGES: Ridge[] = [
-  { ax: -120, az: -15, bx: -35, bz: -85, w: 13, h: 11 },
-  { ax: 15, az: 62, bx: 118, bz: 28, w: 12, h: 12 },
-  { ax: -30, az: 200, bx: 60, bz: 150, w: 12, h: 10 },
+  { ax: -150, az: -15, bx: -55, bz: -85, w: 13, h: 11 },
+  { ax: -30, az: 62, bx: 34, bz: 26, w: 12, h: 12 },
+  { ax: -80, az: 188, bx: 12, bz: 148, w: 12, h: 10 },
 ];
+
+/** Terraced descent floor level by x: shelf lip → steps → deep basin. */
+function stairProfile(x: number): number {
+  const e = WORLD.edgeX;
+  let y = 4;
+  y -= smoothstep(e - 2, e + 22, x) * 26; // step 1  → ~-22
+  y -= smoothstep(e + 40, e + 64, x) * 34; // step 2 → ~-56
+  y -= smoothstep(e + 80, e + 130, x) * 55; // slope → ~-111
+  y -= smoothstep(e + 150, e + 230, x) * 66; // deep  → ~-177 (into dark fog)
+  return y;
+}
 
 function segDist(px: number, pz: number, r: Ridge): number {
   const dx = r.bx - r.ax;
@@ -125,47 +136,45 @@ export class Terrain implements TerrainLike {
 
   /** World-space seabed height at (x, z). */
   heightAt(x: number, z: number): number {
-    // Rolling dunes.
-    let h = 6 + fbm(x * 0.008 + 11.7, z * 0.008 + 3.1, 4) * 9;
-    // Rocky ridge lines rising out of the sand.
+    // --- shelf surface: dunes + ridges + formations ---
+    let shelf = 6 + fbm(x * 0.008 + 11.7, z * 0.008 + 3.1, 4) * 9;
     const rn = fbm(x * 0.014 + 31.2, z * 0.014 + 17.6, 3);
     const ridged = 1 - Math.abs(2 * rn - 1);
-    h += ridged * ridged * ridged * 8;
-    // Fine relief.
-    h += fbm(x * 0.05 + 7.3, z * 0.05 + 9.9, 3) * 1.4;
+    shelf += ridged * ridged * ridged * 8;
+    shelf += fbm(x * 0.05 + 7.3, z * 0.05 + 9.9, 3) * 1.4;
 
-    // Large formations: mesas, pinnacles, ridge walls.
     for (const f of FORMATIONS) {
       const d = Math.hypot(x - f.x, z - f.z);
       if (d < f.r) {
-        const inner = f.r * (f.kind === 'mesa' ? 0.38 : 0.16);
-        const t = 1 - smoothstep(inner, f.r, d);
-        h += f.h * Math.pow(t, f.kind === 'mesa' ? 1.1 : 1.5);
+        const t = 1 - smoothstep(f.r * (f.kind === 'mesa' ? 0.38 : 0.16), f.r, d);
+        shelf += f.h * Math.pow(t, f.kind === 'mesa' ? 1.1 : 1.5);
       }
     }
     for (const rg of RIDGES) {
       const d = segDist(x, z, rg);
       if (d < rg.w) {
         const t = 1 - smoothstep(rg.w * 0.25, rg.w, d);
-        h += rg.h * Math.pow(t, 1.2);
+        shelf += rg.h * Math.pow(t, 1.2);
       }
     }
 
-    const r = Math.hypot(x, z);
-    const dx = x - WORLD.dropCenter.x;
-    const dz = z - WORLD.dropCenter.z;
-    const dropDist = Math.hypot(dx, dz);
+    // Enclosing walls on the back (-X) and the two sides (±Z). The +X side is
+    // deliberately open — that is the sea edge leading into the deep.
+    const backWall = (1 - smoothstep(WORLD.minX + 8, WORLD.minX + 48, x)) * 46;
+    const sideWall =
+      ((1 - smoothstep(WORLD.minZ + 8, WORLD.minZ + 48, z)) +
+        smoothstep(WORLD.maxZ - 48, WORLD.maxZ - 8, z)) *
+      42;
+    shelf += backWall + sideWall;
 
-    // Edge walls rise beyond the playable radius, suppressed near the drop.
-    let wall = smoothstep(WORLD.playableRadius - 35, WORLD.hardRadius + 15, r) * 42;
-    wall *= Math.min(1, dropDist / (WORLD.dropRadius * 1.9));
-    h += wall;
+    // --- deep floor: terraced staircase dropping into the abyss ---
+    let floor = stairProfile(x);
+    const deepNoise = 1 - smoothstep(-30, -90, floor); // less relief when very deep
+    floor += fbm(x * 0.03 + 2.2, z * 0.03 + 5.5, 3) * 6 * deepNoise;
 
-    // Descent pit: seabed plunges into darkness.
-    const dropT = 1 - smoothstep(WORLD.dropRadius * 0.18, WORLD.dropRadius, dropDist);
-    h = lerp(h, -165, smoothstep(0.02, 1, dropT));
-
-    return h;
+    // Blend shelf → deep across the cliff lip.
+    const t = smoothstep(WORLD.edgeX - 14, WORLD.edgeX + 8, x);
+    return lerp(shelf, floor, t);
   }
 
   /** Approximate slope magnitude (for placement rules and colouring). */
@@ -191,7 +200,8 @@ export class Terrain implements TerrainLike {
     const sandDark = textured ? new Color(0.82, 0.78, 0.68) : new Color(0x6f6248);
     const algae = textured ? new Color(0.5, 0.72, 0.5) : new Color(0x3f5c40);
     const rock = textured ? new Color(0.68, 0.72, 0.78) : new Color(0x565e63);
-    const deep = textured ? new Color(0.1, 0.22, 0.3) : new Color(0x0a1c26);
+    // Near-black so the descent floor + cliff face read as a deep dark abyss.
+    const deep = textured ? new Color(0.03, 0.06, 0.09) : new Color(0x03090e);
     const tmp = new Color();
     const tmp2 = new Color();
 
@@ -208,7 +218,7 @@ export class Terrain implements TerrainLike {
       const rockT = smoothstep(0.5, 1.15, this.slopeAt(x, z));
       tmp.lerp(tmp2.copy(rock), rockT);
       tmp.multiplyScalar(0.9 + fbm(x * 0.09, z * 0.09, 2) * 0.2);
-      tmp.lerp(tmp2.copy(deep), smoothstep(4, -32, h));
+      tmp.lerp(tmp2.copy(deep), smoothstep(6, -60, h));
 
       colors[i * 3] = tmp.r;
       colors[i * 3 + 1] = tmp.g;
@@ -266,7 +276,11 @@ export class Terrain implements TerrainLike {
               float grain = tNoise(vWorldPos.xz * 3.4) * 0.6 + tNoise(vWorldPos.xz * 11.0) * 0.4;
               diffuseColor.rgb *= mix(1.0, 0.92 + grain * 0.16, detailFade);
             }
-          }`,
+          }
+          // Abyssal darkening: geometry below the shelf plunges toward black,
+          // so the cliff face and deep basin read as a very deep, dark drop-off
+          // regardless of where you view them from.
+          diffuseColor.rgb *= mix(1.0, 0.05, smoothstep(2.0, -42.0, vWorldPos.y));`,
         )
         .replace(
           '#include <dithering_fragment>',

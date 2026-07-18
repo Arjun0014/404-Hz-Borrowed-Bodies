@@ -145,20 +145,27 @@ export class SwimController {
       }
     }
 
-    // Soft outer current, hard clamp beyond it (relative to the zone centre).
-    const cx = this.bounds.centerX;
-    const cz = this.bounds.centerZ;
-    const rx = this.pos.x - cx;
-    const rz = this.pos.z - cz;
-    const r = Math.hypot(rx, rz);
-    if (r > this.bounds.playableRadius) {
-      TMP.set(-rx / r, 0, -rz / r);
-      const push = Math.min(1, (r - this.bounds.playableRadius) / 20);
-      this.vel.addScaledVector(TMP, push * 14 * dt);
-      if (r > this.bounds.hardRadius) {
-        this.pos.x = cx + (rx * this.bounds.hardRadius) / r;
-        this.pos.z = cz + (rz * this.bounds.hardRadius) / r;
-      }
+    // Soft box current + hard clamp, per axis. The +X open edge is far out in
+    // the deep, so the player can swim well past the shelf before it pushes.
+    const b = this.bounds;
+    const m = b.softMargin;
+    if (this.pos.x > b.maxX) {
+      const over = this.pos.x - b.maxX;
+      this.vel.x -= Math.min(1, over / m) * 16 * dt;
+      if (over > m) this.pos.x = b.maxX + m;
+    } else if (this.pos.x < b.minX) {
+      const over = b.minX - this.pos.x;
+      this.vel.x += Math.min(1, over / m) * 16 * dt;
+      if (over > m) this.pos.x = b.minX - m;
+    }
+    if (this.pos.z > b.maxZ) {
+      const over = this.pos.z - b.maxZ;
+      this.vel.z -= Math.min(1, over / m) * 16 * dt;
+      if (over > m) this.pos.z = b.maxZ + m;
+    } else if (this.pos.z < b.minZ) {
+      const over = b.minZ - this.pos.z;
+      this.vel.z += Math.min(1, over / m) * 16 * dt;
+      if (over > m) this.pos.z = b.minZ - m;
     }
 
     // --- orientation ---------------------------------------------------------

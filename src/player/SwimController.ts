@@ -21,6 +21,8 @@ export class SwimController {
   readonly pos = new Vector3();
   readonly vel = new Vector3();
   speed01 = 0;
+  /** 0..1 thrust intensity for water FX — full while dashing, light while cruising fast. */
+  dashOutput = 0;
 
   /** Orientation as yaw/pitch scalars — roll is structurally impossible. */
   private curYaw = Math.PI / 2; // spawn facing +X (toward the drop-off)
@@ -136,6 +138,9 @@ export class SwimController {
     // --- orientation ---------------------------------------------------------
     const speedNow = this.vel.length();
     this.speed01 = speedNow / mv.maxSpeed;
+    this.dashOutput = dashing
+      ? Math.min(1, this.speed01 / 1.3)
+      : Math.max(0, this.speed01 - 0.6) * 0.5;
     // Face velocity when moving; face aim when idle. Orientation is tracked
     // as yaw/pitch scalars and rebuilt from Euler each frame, so roll (and
     // therefore an upside-down or slanted fish) is structurally impossible.

@@ -78,6 +78,13 @@ export class PlayerFish {
     this.modelRoot.rotation.z = this.bank;
   }
 
+  /** World position just behind the tail (for dash bubble emission). */
+  getTailPosition(out: Vector3): Vector3 {
+    // -Z is the tail in local space (forward is +Z after alignment).
+    out.set(0, 0, -this.length * 0.55);
+    return this.object.localToWorld(out);
+  }
+
   update(dt: number, speed01: number): void {
     if (this.mixer) {
       this.mixer.update(dt * (0.6 + speed01 * 1.8));

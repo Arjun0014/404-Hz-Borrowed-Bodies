@@ -18,9 +18,12 @@ import { ShallowVeil } from '../world/ShallowVeil';
 import { PlayerFish } from '../entities/PlayerFish';
 import { SwimController } from '../player/SwimController';
 import { PlayerCamera } from '../player/PlayerCamera';
+import { Bubbles } from '../entities/Bubbles';
+import { UnderwaterFx } from '../render/UnderwaterFx';
 import { DARTFISH } from '../data/species';
 
 const MARKER_POS = new Vector3();
+const TAIL_POS = new Vector3();
 
 /** Application shell: renderer, screens, and the Phase 1 play state. */
 export class GameApp {
@@ -36,6 +39,8 @@ export class GameApp {
   private fish!: PlayerFish;
   private controller!: SwimController;
   private playerCamera!: PlayerCamera;
+  private bubbles!: Bubbles;
+  private fx!: UnderwaterFx;
   private started = false;
   private hintTimer = 0;
 
@@ -47,6 +52,9 @@ export class GameApp {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.tabIndex = 0;
+    // The composer renders multiple passes per frame; reset info once manually
+    // so the debug overlay reports the whole frame's real draw calls/triangles.
+    this.renderer.info.autoReset = false;
 
     this.quality = new Quality(this.renderer);
     this.loader = new AssetLoader(this.renderer);
@@ -67,6 +75,8 @@ export class GameApp {
         e.preventDefault();
         this.quality.cycle();
         this.zone?.setParticleScale(this.quality.particleScale);
+        this.bubbles?.setPixelRatio(this.renderer.getPixelRatio());
+        this.fx?.resize(this.renderer);
         this.showHint(`quality: ${this.quality.level}`, 1.6);
       }
     });
@@ -119,6 +129,10 @@ export class GameApp {
       this.zone.colliders,
     );
 
+    this.bubbles = new Bubbles(this.scene);
+    this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
+    this.fx = new UnderwaterFx(this.renderer, this.scene, this.playerCamera.camera);
+
     loadingEl.classList.add('hidden');
     const titleEl = document.getElementById('title')!;
     titleEl.classList.remove('hidden');
@@ -150,6 +164,7 @@ export class GameApp {
   }
 
   private tick(dt: number): void {
+    this.renderer.info.reset();
     this.controller.update(dt);
     this.playerCamera.update(dt, this.controller.pos, this.controller.vel, this.controller.speed01);
     this.zone.update(dt, this.playerCamera.camera, this.renderer);
@@ -163,7 +178,10 @@ export class GameApp {
     }
     this.hintTimer -= dt;
 
-    this.renderer.render(this.scene, this.playerCamera.camera);
+    this.fish.getTailPosition(TAIL_POS);
+    this.bubbles.update(dt, this.playerCamera.camera.position, TAIL_POS, this.controller.vel, this.controller.dashOutput);
+
+    this.fx.render(dt, this.controller.speed01);
     this.debug.update(dt, this.renderer, this.loop, this.quality, this.controller.pos, this.zone.particleCount);
   }
 
@@ -177,5 +195,6 @@ export class GameApp {
   private onResize(): void {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.playerCamera?.resize(window.innerWidth / window.innerHeight);
+    this.fx?.resize(this.renderer);
   }
 }

@@ -25,6 +25,7 @@ import {
 import type {
   CylinderCollider,
   DescentInfo,
+  PopulationArea,
   TerrainLike,
   TerrainMaps,
   Zone,
@@ -281,6 +282,11 @@ export class BlockoutZone implements Zone {
       targetName: `Descent Blockout · Depth ${this.depth + 1}`,
       recommendedDominance: 'Hunter',
     };
+  }
+
+  /** The blockout has no ecosystem (Phase 3 populates only the Shallow Veil). */
+  getPopulationArea(): PopulationArea | null {
+    return null;
   }
 
   /** The blockout's descent is the glowing central core. */

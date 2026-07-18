@@ -36,6 +36,7 @@ import { FORMATIONS, Terrain } from './Terrain';
 import type {
   CylinderCollider,
   DescentInfo,
+  PopulationArea,
   TerrainMaps,
   Zone,
   ZoneBounds,
@@ -819,6 +820,16 @@ export class ShallowVeil implements Zone {
 
   getDescentInfo(): DescentInfo {
     return { targetName: 'The Drowned Garden', recommendedDominance: 'Hunter' };
+  }
+
+  /** Creatures live on the shelf, never out over the open deep (x < edge). */
+  getPopulationArea(): PopulationArea {
+    return {
+      minX: WORLD.minX + 18,
+      maxX: WORLD.edgeX - 8,
+      minZ: WORLD.minZ + 18,
+      maxZ: WORLD.maxZ - 18,
+    };
   }
 
   /** The player is out over the deep once they cross past the descent line. */

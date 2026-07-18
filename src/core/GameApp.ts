@@ -22,6 +22,9 @@ import { PlayerCamera } from '../player/PlayerCamera';
 import { Bubbles } from '../entities/Bubbles';
 import { UnderwaterFx } from '../render/UnderwaterFx';
 import { DARTFISH } from '../data/species';
+import { Ecosystem } from '../systems/Ecosystem';
+import { SHALLOW_VEIL_POP } from '../data/creatures';
+import type { Zone } from '../world/types';
 
 const TAIL_POS = new Vector3();
 const SPAWN = new Vector3();
@@ -47,6 +50,7 @@ export class GameApp {
   private playerCamera!: PlayerCamera;
   private bubbles!: Bubbles;
   private fx!: UnderwaterFx;
+  private ecosystem!: Ecosystem;
 
   private started = false;
   private transitioning = false;
@@ -159,6 +163,11 @@ export class GameApp {
     this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
     this.fx = new UnderwaterFx(this.renderer, this.scene, this.playerCamera.camera);
 
+    // Living ecosystem: load every species once, then populate this zone.
+    this.ecosystem = new Ecosystem(this.loader, this.scene);
+    await this.ecosystem.load();
+    this.bindEcosystem(zone);
+
     this.updateZoneTag();
 
     loadingEl.classList.add('hidden');
@@ -226,6 +235,9 @@ export class GameApp {
     const speed = this.transitioning ? 0 : this.controller.speed01;
     this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
     zone.update(dt, this.playerCamera.camera, this.renderer);
+    if (!this.transitioning) {
+      this.ecosystem.update(dt, this.controller.pos, this.fish.length);
+    }
 
     if (!this.transitioning) {
       this.fish.getTailPosition(TAIL_POS);
@@ -239,7 +251,27 @@ export class GameApp {
     }
 
     this.fx.render(dt, speed);
-    this.debug.update(dt, this.renderer, this.loop, this.quality, this.controller.pos, zone.particleCount);
+    this.debug.update(
+      dt,
+      this.renderer,
+      this.loop,
+      this.quality,
+      this.controller.pos,
+      zone.particleCount,
+      this.ecosystem?.count ?? 0,
+    );
+  }
+
+  /** Populate the ecosystem for a zone (empty when the zone has no area). */
+  private bindEcosystem(zone: Zone): void {
+    const area = zone.getPopulationArea();
+    this.ecosystem.bindZone({
+      terrain: zone.terrain,
+      colliders: zone.colliders,
+      bounds: zone.getBounds(),
+      area,
+      population: area ? SHALLOW_VEIL_POP : [],
+    });
   }
 
   // ---- descent flow --------------------------------------------------------
@@ -301,6 +333,7 @@ export class GameApp {
     next.getSpawn(SPAWN);
     this.playerCamera.bindZone(next.terrain, next.colliders);
     this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
+    this.bindEcosystem(next);
     this.updateZoneTag();
 
     // Draw one (still-dark) frame of the new zone so it is ready to reveal.

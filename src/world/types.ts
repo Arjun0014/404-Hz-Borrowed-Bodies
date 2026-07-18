@@ -36,6 +36,14 @@ export interface DescentInfo {
   recommendedDominance: string;
 }
 
+/** Seabed rectangle where the ecosystem may spawn creatures. */
+export interface PopulationArea {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
 /**
  * A self-contained gameplay zone. Owns all zone-scoped GPU resources and can
  * fully dispose them; the player rig (fish, camera, controller) is NOT part of
@@ -53,6 +61,8 @@ export interface Zone {
 
   getSpawn(out: Vector3): Vector3;
   getBounds(): ZoneBounds;
+  /** Where the ecosystem may spawn creatures; null = this zone has none. */
+  getPopulationArea(): PopulationArea | null;
 
   /** Null when this zone has no further descent (dead-end / final). */
   getDescentInfo(): DescentInfo | null;

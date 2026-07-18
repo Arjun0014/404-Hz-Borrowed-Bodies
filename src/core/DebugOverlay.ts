@@ -32,6 +32,7 @@ export class DebugOverlay {
     quality: Quality,
     playerPos: Vector3,
     particleCount: number,
+    creatureCount = 0,
   ): void {
     this.timer += dt;
     if (this.timer < 0.25 || !this.visible) return;
@@ -51,6 +52,7 @@ export class DebugOverlay {
       `programs   ${info.programs?.length ?? 0}\n` +
       `js heap    ${heap}\n` +
       `particles  ${particleCount}\n` +
+      `creatures  ${creatureCount}\n` +
       `quality    ${quality.level}\n` +
       `pos        ${playerPos.x.toFixed(0)}, ${playerPos.y.toFixed(0)}, ${playerPos.z.toFixed(0)}\n` +
       `depth      ${depth} m`;

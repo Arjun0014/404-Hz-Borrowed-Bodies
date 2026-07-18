@@ -1,10 +1,9 @@
 import { Euler, Vector3 } from 'three';
 import type { Input } from '../core/Input';
-import type { Terrain } from '../world/Terrain';
-import type { CylinderCollider } from '../world/ShallowVeil';
+import type { CylinderCollider, TerrainLike, ZoneBounds } from '../world/types';
 import type { PlayerFish } from '../entities/PlayerFish';
 import type { PlayerCamera } from './PlayerCamera';
-import { STEERING_SCHEME, WORLD } from '../config';
+import { STEERING_SCHEME } from '../config';
 
 const AIM = new Vector3();
 const DESIRED = new Vector3();
@@ -29,17 +28,46 @@ export class SwimController {
   private curPitch = 0;
   private yawRate = 0;
 
+  // Zone-scoped references, swapped on descent via bindZone().
+  private terrain: TerrainLike;
+  private colliders: CylinderCollider[];
+  private bounds: ZoneBounds;
+
   constructor(
     private readonly fish: PlayerFish,
     private readonly input: Input,
     private readonly camera: PlayerCamera,
-    private readonly terrain: Terrain,
-    private readonly colliders: CylinderCollider[],
+    terrain: TerrainLike,
+    colliders: CylinderCollider[],
+    bounds: ZoneBounds,
+    spawn: Vector3,
   ) {
-    this.pos.set(WORLD.spawn.x, this.terrain.heightAt(WORLD.spawn.x, WORLD.spawn.z) + 3, WORLD.spawn.z);
+    this.terrain = terrain;
+    this.colliders = colliders;
+    this.bounds = bounds;
+    this.placeAt(spawn);
+  }
+
+  /** Point the player at a spawn, level and at rest. */
+  private placeAt(spawn: Vector3): void {
+    this.pos.copy(spawn);
+    this.vel.set(0, 0, 0);
+    this.speed01 = 0;
+    this.dashOutput = 0;
+    this.curYaw = Math.PI / 2;
+    this.curPitch = 0;
+    this.yawRate = 0;
     this.fish.object.position.copy(this.pos);
     LOOK_E.set(0, this.curYaw, 0);
     this.fish.object.quaternion.setFromEuler(LOOK_E);
+  }
+
+  /** Rebind to a new zone after descent and reposition at its spawn. */
+  bindZone(terrain: TerrainLike, colliders: CylinderCollider[], bounds: ZoneBounds, spawn: Vector3): void {
+    this.terrain = terrain;
+    this.colliders = colliders;
+    this.bounds = bounds;
+    this.placeAt(spawn);
   }
 
   update(dt: number): void {
@@ -86,10 +114,9 @@ export class SwimController {
       this.pos.y = ground + radius;
       if (this.vel.y < 0) this.vel.y *= -0.15;
     }
-    // Surface.
-    const ceiling = WORLD.surfaceY - 0.7;
-    if (this.pos.y > ceiling) {
-      this.pos.y = ceiling;
+    // Surface / zone ceiling (blocks backtracking upward in deeper zones).
+    if (this.pos.y > this.bounds.ceilingY) {
+      this.pos.y = this.bounds.ceilingY;
       if (this.vel.y > 0) this.vel.y = 0;
     }
     // Solid obstacles (spires, monoliths): push out radially.
@@ -118,20 +145,19 @@ export class SwimController {
       }
     }
 
-    // Phase 1 pit floor: gentle upwelling blocks deep descent until Phase 2.
-    const dDrop = Math.hypot(this.pos.x - WORLD.dropCenter.x, this.pos.z - WORLD.dropCenter.z);
-    if (dDrop < WORLD.dropRadius && this.pos.y < WORLD.pitFloorY) {
-      this.vel.y += (WORLD.pitFloorY - this.pos.y) * 2.2 * dt + 4 * dt;
-    }
-    // Soft outer current, hard clamp beyond it.
-    const r = Math.hypot(this.pos.x, this.pos.z);
-    if (r > WORLD.playableRadius) {
-      TMP.set(-this.pos.x / r, 0, -this.pos.z / r);
-      const push = Math.min(1, (r - WORLD.playableRadius) / 20);
+    // Soft outer current, hard clamp beyond it (relative to the zone centre).
+    const cx = this.bounds.centerX;
+    const cz = this.bounds.centerZ;
+    const rx = this.pos.x - cx;
+    const rz = this.pos.z - cz;
+    const r = Math.hypot(rx, rz);
+    if (r > this.bounds.playableRadius) {
+      TMP.set(-rx / r, 0, -rz / r);
+      const push = Math.min(1, (r - this.bounds.playableRadius) / 20);
       this.vel.addScaledVector(TMP, push * 14 * dt);
-      if (r > WORLD.hardRadius) {
-        this.pos.x *= WORLD.hardRadius / r;
-        this.pos.z *= WORLD.hardRadius / r;
+      if (r > this.bounds.hardRadius) {
+        this.pos.x = cx + (rx * this.bounds.hardRadius) / r;
+        this.pos.z = cz + (rz * this.bounds.hardRadius) / r;
       }
     }
 

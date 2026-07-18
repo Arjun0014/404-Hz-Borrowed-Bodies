@@ -6,7 +6,7 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
-import type { TerrainMaps } from '../world/Terrain';
+import type { TerrainMaps } from '../world/types';
 import seabedDiffUrl from '../../assets/textures/coral_fort_wall_02/textures/coral_fort_wall_02_diff_1k.jpg';
 import seabedNorUrl from '../../assets/textures/coral_fort_wall_02/textures/coral_fort_wall_02_nor_gl_1k.jpg';
 import { Loop } from './Loop';
@@ -14,7 +14,8 @@ import { Input } from './Input';
 import { AssetLoader } from './AssetLoader';
 import { Quality } from './Quality';
 import { DebugOverlay } from './DebugOverlay';
-import { ShallowVeil } from '../world/ShallowVeil';
+import { ZoneManager } from '../world/ZoneManager';
+import { RunState } from '../state/RunState';
 import { PlayerFish } from '../entities/PlayerFish';
 import { SwimController } from '../player/SwimController';
 import { PlayerCamera } from '../player/PlayerCamera';
@@ -22,10 +23,14 @@ import { Bubbles } from '../entities/Bubbles';
 import { UnderwaterFx } from '../render/UnderwaterFx';
 import { DARTFISH } from '../data/species';
 
-const MARKER_POS = new Vector3();
 const TAIL_POS = new Vector3();
+const SPAWN = new Vector3();
 
-/** Application shell: renderer, screens, and the Phase 1 play state. */
+function wait(ms: number): Promise<void> {
+  return new Promise((r) => window.setTimeout(r, ms));
+}
+
+/** Application shell: renderer, screens, run state, and zone lifecycle. */
 export class GameApp {
   private readonly renderer: WebGLRenderer;
   private readonly scene = new Scene();
@@ -35,14 +40,18 @@ export class GameApp {
   private readonly loader: AssetLoader;
   private readonly debug = new DebugOverlay();
 
-  private zone!: ShallowVeil;
+  private zones!: ZoneManager;
+  private runState!: RunState;
   private fish!: PlayerFish;
   private controller!: SwimController;
   private playerCamera!: PlayerCamera;
   private bubbles!: Bubbles;
   private fx!: UnderwaterFx;
+
   private started = false;
-  private hintTimer = 0;
+  private transitioning = false;
+  private promptShown = false;
+  private promptDismissed = false;
 
   constructor(container: HTMLElement) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -74,10 +83,18 @@ export class GameApp {
       } else if (e.code === 'F4') {
         e.preventDefault();
         this.quality.cycle();
-        this.zone?.setParticleScale(this.quality.particleScale);
+        this.zones?.current.setParticleScale(this.quality.particleScale);
         this.bubbles?.setPixelRatio(this.renderer.getPixelRatio());
         this.fx?.resize(this.renderer);
         this.showHint(`quality: ${this.quality.level}`, 1.6);
+      } else if (this.promptShown && !this.transitioning) {
+        if (e.code === 'KeyE') {
+          e.preventDefault();
+          void this.doDescend();
+        } else if (e.code === 'KeyQ') {
+          e.preventDefault();
+          this.cancelDescent();
+        }
       }
     });
   }
@@ -89,8 +106,8 @@ export class GameApp {
       fillEl.style.width = `${Math.round((l / Math.max(t, 1)) * 100)}%`;
     };
 
-    // Seabed texture set (Poly Haven coral_fort_wall_02, CC0). Non-fatal if
-    // it fails to load: the terrain falls back to its vertex-colour palette.
+    // Seabed texture set (Poly Haven coral_fort_wall_02, CC0). Non-fatal if it
+    // fails to load: zones fall back to their vertex-colour palettes.
     let maps: TerrainMaps | undefined;
     try {
       const texLoader = new TextureLoader();
@@ -107,17 +124,23 @@ export class GameApp {
       console.warn('[404hz] seabed textures failed to load, using fallback palette', err);
     }
 
-    // Build world + player.
-    this.zone = new ShallowVeil(this.scene);
-    this.zone.build(this.renderer, this.quality.particleScale, maps);
+    // Run state: resume a saved run if one is mid-descent, else start fresh.
+    const saved = RunState.load();
+    const resuming = !!saved && saved.data.depth > 0;
+    this.runState = resuming ? (saved as RunState) : new RunState();
+    this.runState.save();
+
+    // Build the current zone + player rig.
+    this.zones = new ZoneManager(this.scene, this.renderer, maps);
+    const zone = this.zones.buildInitial(this.runState.data.depth, this.quality.particleScale);
 
     this.fish = await PlayerFish.create(this.loader, DARTFISH);
     this.scene.add(this.fish.object);
 
     this.playerCamera = new PlayerCamera(
       this.input,
-      this.zone.terrain,
-      this.zone.colliders,
+      zone.terrain,
+      zone.colliders,
       window.innerWidth / window.innerHeight,
     );
     this.playerCamera.setHost(DARTFISH.camera, this.fish.length);
@@ -125,16 +148,28 @@ export class GameApp {
       this.fish,
       this.input,
       this.playerCamera,
-      this.zone.terrain,
-      this.zone.colliders,
+      zone.terrain,
+      zone.colliders,
+      zone.getBounds(),
+      zone.getSpawn(SPAWN),
     );
 
     this.bubbles = new Bubbles(this.scene);
     this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
     this.fx = new UnderwaterFx(this.renderer, this.scene, this.playerCamera.camera);
 
+    this.updateZoneTag();
+
     loadingEl.classList.add('hidden');
     const titleEl = document.getElementById('title')!;
+    const promptLine = titleEl.querySelector('.prompt') as HTMLElement | null;
+    if (resuming && promptLine) {
+      promptLine.textContent = `click to resume · Depth ${this.runState.data.depth}`;
+      const tag = document.createElement('p');
+      tag.className = 'phase-tag';
+      tag.textContent = 'press N for a new run';
+      titleEl.appendChild(tag);
+    }
     titleEl.classList.remove('hidden');
 
     const beginPlay = () => {
@@ -142,16 +177,22 @@ export class GameApp {
       this.input.requestLock();
     };
     titleEl.addEventListener('click', beginPlay);
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyN' && !this.started) {
+        RunState.clear();
+        location.reload();
+      }
+    });
 
     const resumeChip = document.getElementById('resume-chip')!;
     this.renderer.domElement.addEventListener('click', () => {
-      if (this.started && !this.input.pointerLocked) this.input.requestLock();
+      if (this.started && !this.input.pointerLocked && !this.transitioning) this.input.requestLock();
     });
     this.input.onPointerLockChange = (locked) => {
       if (locked) {
         this.started = true;
         resumeChip.classList.add('hidden');
-      } else if (this.started) {
+      } else if (this.started && !this.transitioning) {
         resumeChip.classList.remove('hidden');
       }
     };
@@ -165,24 +206,139 @@ export class GameApp {
 
   private tick(dt: number): void {
     this.renderer.info.reset();
-    this.controller.update(dt);
-    this.playerCamera.update(dt, this.controller.pos, this.controller.vel, this.controller.speed01);
-    this.zone.update(dt, this.playerCamera.camera, this.renderer);
+    this.runState.tick(dt);
+    const zone = this.zones.current;
 
-    // Descent-marker proximity hint (placeholder until Phase 2).
-    this.zone.getMarkerPosition(MARKER_POS);
-    const nearMarker = MARKER_POS.distanceTo(this.controller.pos) < 26;
-    if (nearMarker && this.hintTimer <= 0) {
-      this.showHint('The drop into the Drowned Garden — descent arrives in Phase 2', 4);
-      this.hintTimer = 20;
+    if (!this.transitioning && this.started) {
+      this.controller.update(dt);
+      this.checkDescent();
     }
-    this.hintTimer -= dt;
 
-    this.fish.getTailPosition(TAIL_POS);
-    this.bubbles.update(dt, this.playerCamera.camera.position, TAIL_POS, this.controller.vel, this.controller.dashOutput);
+    const speed = this.transitioning ? 0 : this.controller.speed01;
+    this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
+    zone.update(dt, this.playerCamera.camera, this.renderer);
 
-    this.fx.render(dt, this.controller.speed01);
-    this.debug.update(dt, this.renderer, this.loop, this.quality, this.controller.pos, this.zone.particleCount);
+    if (!this.transitioning) {
+      this.fish.getTailPosition(TAIL_POS);
+      this.bubbles.update(
+        dt,
+        this.playerCamera.camera.position,
+        TAIL_POS,
+        this.controller.vel,
+        this.controller.dashOutput,
+      );
+    }
+
+    this.fx.render(dt, speed);
+    this.debug.update(dt, this.renderer, this.loop, this.quality, this.controller.pos, zone.particleCount);
+  }
+
+  // ---- descent flow --------------------------------------------------------
+
+  private checkDescent(): void {
+    const trig = this.zones.current.getDescentTrigger();
+    if (!trig) return;
+    const dx = this.controller.pos.x - trig.x;
+    const dz = this.controller.pos.z - trig.z;
+    const inside = Math.hypot(dx, dz) < trig.radius;
+    if (inside) {
+      if (!this.promptShown && !this.promptDismissed) this.showDescentPrompt();
+    } else {
+      this.promptDismissed = false;
+      if (this.promptShown) this.hideDescentPrompt();
+    }
+  }
+
+  private showDescentPrompt(): void {
+    const info = this.zones.current.getDescentInfo();
+    if (!info) return;
+    this.promptShown = true;
+    const el = document.getElementById('descend-prompt')!;
+    (el.querySelector('.dp-target') as HTMLElement).textContent = info.targetName;
+    (el.querySelector('.dp-dom') as HTMLElement).textContent = info.recommendedDominance;
+    el.classList.remove('hidden');
+  }
+
+  private hideDescentPrompt(): void {
+    this.promptShown = false;
+    document.getElementById('descend-prompt')!.classList.add('hidden');
+  }
+
+  private cancelDescent(): void {
+    this.hideDescentPrompt();
+    this.promptDismissed = true; // don't re-show until the player leaves the trigger
+  }
+
+  private async doDescend(): Promise<void> {
+    if (this.transitioning) return;
+    this.transitioning = true;
+    this.hideDescentPrompt();
+
+    const transEl = document.getElementById('transition')!;
+    const textEl = document.getElementById('transition-text')!;
+    const info = this.zones.current.getDescentInfo();
+    textEl.textContent = `Descending to ${info?.targetName ?? 'the deep'}…`;
+    transEl.classList.add('show');
+    await wait(800);
+
+    const before = this.zones.snapshot();
+
+    // Dispose the old zone before building the new → lower peak memory.
+    this.zones.disposeCurrent();
+    const nextDepth = this.runState.data.depth + 1;
+    const next = this.zones.createZone(nextDepth, this.quality.particleScale);
+    this.zones.promote(next);
+    this.runState.descend();
+    this.runState.save();
+
+    // Rebind the persistent player rig to the new zone.
+    next.getSpawn(SPAWN);
+    this.playerCamera.bindZone(next.terrain, next.colliders);
+    this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
+    this.updateZoneTag();
+
+    // Draw one (still-dark) frame of the new zone so it is ready to reveal.
+    next.update(0.016, this.playerCamera.camera, this.renderer);
+    this.playerCamera.update(0.016, this.controller.pos, this.controller.vel, 0);
+    this.fx.render(0.016, 0);
+
+    const after = this.zones.snapshot();
+    console.log('[404hz] descent complete', {
+      depth: this.runState.data.depth,
+      geometries: `${before.geometries} → ${after.geometries}`,
+      textures: `${before.textures} → ${after.textures}`,
+      programs: `${before.programs} → ${after.programs}`,
+      heapMB: before.heapMB !== null && after.heapMB !== null ? `${before.heapMB} → ${after.heapMB}` : 'n/a',
+    });
+
+    await wait(450);
+    transEl.classList.remove('show');
+    await wait(650);
+    this.transitioning = false;
+    if (!this.input.pointerLocked && this.started) {
+      document.getElementById('resume-chip')!.classList.remove('hidden');
+    }
+  }
+
+  private updateZoneTag(): void {
+    const el = document.getElementById('zone-tag');
+    if (el) el.textContent = `DEPTH ${this.runState.data.depth} · ${this.zones.current.displayName}`;
+  }
+
+  /** Automated 5× transition memory test (call from console: __game.runTransitionTest()). */
+  async runTransitionTest(n = 5): Promise<void> {
+    const base = this.zones.snapshot();
+    console.log('[404hz][test] baseline', base);
+    for (let i = 0; i < n; i++) {
+      await this.doDescend();
+      await wait(250);
+      const s = this.zones.snapshot();
+      console.log(`[404hz][test] after descent ${i + 1}`, s, {
+        dGeoVsBase: s.geometries - base.geometries,
+        dTexVsBase: s.textures - base.textures,
+      });
+    }
+    console.log('[404hz][test] done. Geometry/texture counts should be flat across descents.');
   }
 
   private showHint(text: string, seconds: number): void {

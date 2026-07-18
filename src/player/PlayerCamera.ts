@@ -1,7 +1,6 @@
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three';
 import type { Input } from '../core/Input';
-import type { Terrain } from '../world/Terrain';
-import type { CylinderCollider } from '../world/ShallowVeil';
+import type { CylinderCollider, TerrainLike } from '../world/types';
 import type { CameraProfile } from '../data/species';
 import { WORLD } from '../config';
 
@@ -29,18 +28,31 @@ export class PlayerCamera {
   private readonly smoothPos = new Vector3();
   private initialized = false;
 
+  // Zone-scoped references, swapped on descent.
+  private terrain: TerrainLike;
+  private colliders: CylinderCollider[];
+
   constructor(
     private readonly input: Input,
-    private readonly terrain: Terrain,
-    private readonly colliders: CylinderCollider[],
+    terrain: TerrainLike,
+    colliders: CylinderCollider[],
     aspect: number,
   ) {
+    this.terrain = terrain;
+    this.colliders = colliders;
     this.profile = { distanceFactor: 7, minDistance: 2.4, heightFactor: 2, baseFov: 60 };
     this.hostLength = 0.4;
     this.baseDist = this.computeBaseDist();
     this.currentDist = this.baseDist;
     this.currentFov = this.profile.baseFov;
     this.camera = new PerspectiveCamera(this.currentFov, aspect, 0.08, 900);
+  }
+
+  /** Rebind to a new zone; the next update snaps to the new framing. */
+  bindZone(terrain: TerrainLike, colliders: CylinderCollider[]): void {
+    this.terrain = terrain;
+    this.colliders = colliders;
+    this.initialized = false;
   }
 
   /** Called on spawn and again on every possession/growth change (Phase 5+). */

@@ -34,7 +34,15 @@ import {
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CircleGeometry, RepeatWrapping, type Texture } from 'three';
 import { FOG, WORLD } from '../config';
-import { FORMATIONS, Terrain, type TerrainMaps } from './Terrain';
+import { FORMATIONS, Terrain } from './Terrain';
+import type {
+  CylinderCollider,
+  DescentInfo,
+  DescentTrigger,
+  TerrainMaps,
+  Zone,
+  ZoneBounds,
+} from './types';
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -50,19 +58,17 @@ interface SwayMat extends MeshStandardMaterial {
   userData: { shader?: { uniforms: { uTime: { value: number } } } };
 }
 
+/** Descent marker sits on the pit rim; its XZ is the descent trigger centre. */
+const MARKER_X = WORLD.dropCenter.x - WORLD.dropRadius * 0.72;
+const MARKER_Z = WORLD.dropCenter.z;
+
 /**
  * The Shallow Veil: sunlit blue-green shelf with seagrass meadows, boulder
  * fields, coral reefs, kelp stands, god rays, and the descent pit.
  * Owns everything zone-scoped and can fully dispose itself.
  */
-export interface CylinderCollider {
-  x: number;
-  z: number;
-  r: number;
-  top: number;
-}
-
-export class ShallowVeil {
+export class ShallowVeil implements Zone {
+  readonly displayName = 'The Shallow Veil';
   readonly group = new Group();
   readonly terrain = new Terrain();
   /** Solid obstacles (spires, landmark boulders) for player + camera collision. */
@@ -105,16 +111,29 @@ export class ShallowVeil {
     sun.position.set(80, 150, 40);
     this.group.add(sun);
 
+    let terrainMaps: TerrainMaps | undefined;
     if (maps) {
-      // Separate transform for rocks/spires (clone shares the image data).
+      // Clone from the shared base so this zone owns (and disposes) its own
+      // texture objects with their own repeat/wrap — the base survives.
+      const tMap = maps.map.clone();
+      tMap.wrapS = tMap.wrapT = RepeatWrapping;
+      tMap.repeat.set(110, 110);
+      tMap.needsUpdate = true;
+      const tNor = maps.normalMap.clone();
+      tNor.wrapS = tNor.wrapT = RepeatWrapping;
+      tNor.repeat.set(110, 110);
+      tNor.needsUpdate = true;
+      terrainMaps = { map: tMap, normalMap: tNor };
+
       this.rockTexture = maps.map.clone();
       this.rockTexture.wrapS = this.rockTexture.wrapT = RepeatWrapping;
       this.rockTexture.repeat.set(2.5, 2);
       this.rockTexture.needsUpdate = true;
-      this.disposables.push(this.rockTexture);
+
+      this.disposables.push(tMap, tNor, this.rockTexture);
     }
 
-    this.group.add(this.terrain.build(maps));
+    this.group.add(this.terrain.build(terrainMaps));
 
     this.buildSurface();
     this.buildGodRays();
@@ -770,8 +789,8 @@ export class ShallowVeil {
   // ---- descent marker (placeholder for Phase 2) ------------------------------------------
 
   private buildDescentMarker(): void {
-    const rimX = WORLD.dropCenter.x - WORLD.dropRadius * 0.72;
-    const rimZ = WORLD.dropCenter.z;
+    const rimX = MARKER_X;
+    const rimZ = MARKER_Z;
     const y = this.terrain.heightAt(rimX, rimZ) + 3;
 
     const geo = new TorusGeometry(4, 0.14, 10, 48);
@@ -790,6 +809,34 @@ export class ShallowVeil {
   /** World position of the descent placeholder (for proximity hints). */
   getMarkerPosition(out: Vector3): Vector3 {
     return out.copy(this.markerRing.position);
+  }
+
+  // ---- Zone interface -----------------------------------------------------
+
+  getSpawn(out: Vector3): Vector3 {
+    return out.set(
+      WORLD.spawn.x,
+      this.terrain.heightAt(WORLD.spawn.x, WORLD.spawn.z) + 3,
+      WORLD.spawn.z,
+    );
+  }
+
+  getBounds(): ZoneBounds {
+    return {
+      ceilingY: WORLD.surfaceY - 0.7,
+      playableRadius: WORLD.playableRadius,
+      hardRadius: WORLD.hardRadius,
+      centerX: 0,
+      centerZ: 0,
+    };
+  }
+
+  getDescentTrigger(): DescentTrigger {
+    return { x: MARKER_X, z: MARKER_Z, radius: 34 };
+  }
+
+  getDescentInfo(): DescentInfo {
+    return { targetName: 'The Drowned Garden', recommendedDominance: 'Hunter' };
   }
 
   // ---- frame update ------------------------------------------------------------------------
@@ -830,9 +877,10 @@ export class ShallowVeil {
   }
 
   dispose(): void {
+    // Note: scene.fog / scene.background are global render state, not zone
+    // resources — the next zone overwrites them on build. Nulling them here
+    // would clobber a zone built before this one is disposed.
     this.scene.remove(this.group);
-    this.scene.fog = null;
-    this.scene.background = null;
     this.group.traverse((obj) => {
       const mesh = obj as Mesh;
       if (mesh.isMesh || (obj as Points).type === 'Points') {

@@ -7,13 +7,23 @@ IMPLEMENTATION_PLAN.md and per-phase notes.
 
 ## Current status
 
-- **Phase**: 1 built — **awaiting user verification/approval** (swim feel, camera, zone scale, atmosphere)
+- **Phase**: 2 built — **awaiting user verification/approval** (one-way descent + zone lifecycle). Phase 1 APPROVED.
 - **Stack**: Three.js 0.185 + TypeScript + Vite 8, no physics engine, HTML-overlay UI, custom kinematic swim + analytic-heightfield collision
 - **Git**: repo initialized on `main`, remote = https://github.com/Arjun0014/404-Hz-Borrowed-Bodies
 - **Hosting**: wavedash (decided by user; only matters at Phase 19/22)
 - **Assets in use**: `assets/clown_fish_compressed.glb` = starter fish (Draco+KTX2, 276 tris, 94 bones, 1 anim clip); `assets/tuna_fish_compressed.glb` reserved for Phase 3+ (6k tris, 47 bones, 2 clips). Licence info still TBD from user (`assets/LICENSES.md`).
 - **Run**: `npm run dev` → http://localhost:5173, click to dive. F3 stats, F4 quality.
-- **Next action on approval**: Phase 2 — zone lifecycle + one-way descent proof (ZoneManager, RunState, transition, disposal verification, 5× memory test)
+- **Next action on approval**: Phase 3 — ambient ocean population (schools, tier system, spawn/despawn, population budgets, distance-based AI simplification)
+
+## Architecture (Phase 2)
+
+- `src/world/types.ts` — Zone interface + shared types (CylinderCollider, TerrainMaps, TerrainLike, ZoneBounds, DescentTrigger, DescentInfo). ALL zone/player code imports collider/terrain types from here now (moved out of ShallowVeil.ts and Terrain.ts).
+- `src/world/ZoneManager.ts` — owns single active zone; createZone(depth) factory (0=ShallowVeil, 1+=BlockoutZone), disposeCurrent, promote, snapshot() (renderer.info + heap).
+- `src/world/BlockoutZone.ts` — temporary lower-zone prototype (NOT Drowned Garden art): dark enclosed bowl, blockout pillars w/ colliders, glowing descent core, darker per depth. Own BlockoutTerrain (bowl heightfield).
+- `src/state/RunState.ts` — persistent run state (hostSpeciesId, depth, score, dominance, stats, seed). In-memory survives transitions; localStorage autosave on descent → resume-after-refresh. RunState.clear() for new run.
+- Player rig (fish, SwimController, PlayerCamera, Bubbles, UnderwaterFx) is PERSISTENT across zones. Controller/camera have bindZone() to swap terrain/colliders/bounds/spawn on descent. Controller uses per-zone ZoneBounds (ceiling/radius/center) not global WORLD consts; pit-upwelling removed.
+- Descent flow in GameApp: enter trigger volume → HTML prompt (#descend-prompt, E=descend/Q=cancel) → doDescend(): dark transition overlay → dispose old → build new → rebind player → RunState.descend()+save → reveal. Zone tag HUD (#zone-tag). __game.runTransitionTest(n) for memory test.
+- KEY: zone.dispose() must NOT null scene.fog/background (global render state; next zone sets them). Terrain.dispose() must NOT dispose maps (zone owns clones). Each zone clones base seabed textures for terrain+rocks and disposes the clones.
 
 ## Key files
 
@@ -30,6 +40,8 @@ IMPLEMENTATION_PLAN.md and per-phase notes.
 - Update this file at the end of every iteration.
 
 ## Log
+
+- **2026-07-18 (8)** — Phase 2 built: zone lifecycle + one-way descent. Refactored to a Zone abstraction (types.ts) with ShallowVeil + BlockoutZone implementing it; ZoneManager owns the single active zone; RunState (persistent, localStorage autosave + resume). Player rig now persists across zones and rebinds (bindZone) on descent. Descent: enter trigger → "DESCEND TO X? There is no return" prompt (E/Q) → dark transition (fade + streaks) → dispose old + build new + rebind + save → reveal. VERIFIED headless: prompt shows only in trigger; Q cancels without descending (depth stays 0); E descends (depth 0→1, saved=1); **5× transition memory test FLAT (geometries 7/7, textures 7/7, programs 8/8, heap 54.2/54.2 MB — 0% growth)**; Shallow→blockout freed geometries 20→7 (heavy zone disposes); resume-after-refresh works (reloaded to depth 6); reset→fresh Shallow at depth 0; no console/shader errors. Blockout draw calls 9, tris 42k. Build clean. Awaiting user approval to proceed to Phase 3.
 
 - **2026-07-18 (7)** — Watery feel + dash effect (35b695b). New `src/render/UnderwaterFx.ts` (EffectComposer: RenderPass → underwater ShaderPass → OutputPass): full-screen animated refraction wobble, light bluish depth vignette, speed-driven radial warp + chromatic streak (eases via smoothed uSpeed). New `src/entities/Bubbles.ts`: pooled 260-bubble system, ambient rising sprinkle around camera + dash burst from fish tail (streams backward). SwimController exposes `dashOutput` (full dashing, light cruising). PlayerFish.getTailPosition. GOTCHAS FIXED: (a) EffectComposer targets are linear → MUST add OutputPass or whole scene renders dark (missing tonemap+sRGB); (b) additive particles can't use scene fog (adds color) → fade alpha by distance in shader instead; (c) bubbles spawned near camera bloom into giant rings → clamp gl_PointSize + near-distance alpha fade; (d) composer multi-passes reset renderer.info → set autoReset=false + manual reset once/frame for correct debug draw-call count. Tuning: warp 0.005, chromatic 0.0005+spd*0.0022, vignette floor 0.9. Draw calls ~22, heap 38 MB. Awaiting user verdict.
 

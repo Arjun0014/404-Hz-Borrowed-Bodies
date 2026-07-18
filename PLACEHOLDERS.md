@@ -13,7 +13,9 @@ builder), delete the row here. Never treat a listed item as final art.
 | PH-PARTICLES | Round soft-dot shader points | Plankton/sediment sprite textures | `src/world/ShallowVeil.ts` `buildParticles` | Sediment/plankton sprite sheet (optional) | Active |
 | PH-SURFACE | Sine-band shader plane + canvas sun glow | Water surface normal/distortion textures | `src/world/ShallowVeil.ts` `buildSurface` | Water normal texture (optional) | Active |
 | PH-SILHOUETTE | Dark cone meshes at fog range | Distant ruin/rock silhouette cards | `src/world/ShallowVeil.ts` `buildSilhouettes` | Silhouette cards or low-poly distant set | Active |
-| PH-DESCENT | Pulsing torus ring + point light at pit rim | Final descent-point presentation (Phase 2 owns this) | `src/world/ShallowVeil.ts` `buildDescentMarker` | Designed descent gate visuals + audio | Active |
+| PH-DESCENT | Pulsing torus ring + point light at pit rim | Final descent-point presentation | `src/world/ShallowVeil.ts` `buildDescentMarker` | Designed descent gate visuals + audio | Active |
+| PH-BLOCKOUT | Dark enclosed bowl + blockout pillars + glowing core | The Drowned Garden (Phase 15) and all deeper zones | `src/world/BlockoutZone.ts` | Real zone art per ASSETS.md phases 15-17 | Active (lifecycle proxy only) |
+| PH-TRANSITION | CSS dark fade + falling-streak overlay | Designed descent cinematic/current effect | `index.html` #transition, `src/style.css` | Optional polished transition (Phase 20) | Active |
 | PH-AUDIO | No audio at all in Phase 1 | Zone ambience, UI sounds | — | Shallow ambience loop (Phase 14/20) | Active |
 
 ## Not placeholders (final-art candidates)

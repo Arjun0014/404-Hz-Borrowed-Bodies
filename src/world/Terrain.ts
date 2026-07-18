@@ -5,9 +5,9 @@ import {
   MeshStandardMaterial,
   PlaneGeometry,
   RepeatWrapping,
-  type Texture,
 } from 'three';
 import { WORLD } from '../config';
+import type { TerrainLike, TerrainMaps } from './types';
 
 // ---- deterministic value noise -------------------------------------------
 
@@ -115,16 +115,11 @@ function segDist(px: number, pz: number, r: Ridge): number {
 
 // ---- terrain ------------------------------------------------------------------
 
-export interface TerrainMaps {
-  map: Texture;
-  normalMap: Texture;
-}
-
 /**
  * Analytic heightfield for the Shallow Veil. Height is a pure function so
  * rendering and collision always agree — including every mesa and pinnacle.
  */
-export class Terrain {
+export class Terrain implements TerrainLike {
   mesh!: Mesh;
   private readonly uniforms = { uTime: { value: 0 } };
 
@@ -304,10 +299,8 @@ export class Terrain {
   }
 
   dispose(): void {
+    // Textures are the zone's cloned maps; the owning zone disposes them.
     this.mesh.geometry.dispose();
-    const mat = this.mesh.material as MeshStandardMaterial;
-    mat.map?.dispose();
-    mat.normalMap?.dispose();
-    mat.dispose();
+    (this.mesh.material as MeshStandardMaterial).dispose();
   }
 }

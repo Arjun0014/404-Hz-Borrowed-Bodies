@@ -26,6 +26,7 @@ import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
 import { PlayerCombat } from '../player/PlayerCombat';
 import { PlayerGrowth } from '../player/PlayerGrowth';
+import { Dominance } from '../systems/Dominance';
 import { Sfx, AMBIENT } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
 import { SHALLOW_VEIL_POP } from '../data/creatures';
@@ -59,6 +60,7 @@ export class GameApp {
   private flora!: Flora;
   private combat!: PlayerCombat;
   private growth!: PlayerGrowth;
+  private dominance!: Dominance;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
@@ -204,6 +206,13 @@ export class GameApp {
     this.combat.onFeed = (biomass) => this.growth.feed(biomass);
     this.growth.onStageUp = (name) => this.showStageToast(name);
 
+    // Dominance: defeating creatures builds a persistent run-level rank.
+    this.dominance = new Dominance(this.runState);
+    this.ecosystem.onPlayerKill = (c) => this.dominance.recordKill(c.species);
+    this.dominance.onRankUp = (name) => this.onDominanceRankUp(name);
+    this.dominance.onWeakCapped = () =>
+      this.showHint('Weak prey no longer raises Dominance — hunt bigger creatures.', 5);
+
     this.updateZoneTag();
 
     loadingEl.classList.add('hidden');
@@ -221,6 +230,7 @@ export class GameApp {
     const beginPlay = () => {
       titleEl.classList.add('hidden');
       document.getElementById('health-hud')!.classList.remove('hidden');
+      document.getElementById('dominance-hud')!.classList.remove('hidden');
       void this.sfx.load();
       this.updateZoneAmbient();
       this.spawnGrace = 3.5; // a calm moment before predators lock on
@@ -295,6 +305,7 @@ export class GameApp {
       if (this.started) this.combat.update(dt);
       this.updateCombatHud();
       this.updateGrowthHud();
+      this.updateDominanceHud();
       this.damageBars.update(
         this.playerCamera.camera,
         this.ecosystem.list,
@@ -387,10 +398,41 @@ export class GameApp {
 
   private showStageToast(name: string): void {
     const el = document.getElementById('stage-toast')!;
+    el.classList.remove('dom');
     el.textContent = this.growth.atCeiling ? `MAX GROWTH · ${name}` : `Grew · ${name}`;
     el.classList.remove('hidden');
     void el.offsetWidth; // restart the pop animation
     this.stageToastUntil = performance.now() + 2400;
+  }
+
+  // ---- dominance HUD -------------------------------------------------------
+
+  private domRankEl: HTMLElement | null = null;
+  private domFillEl: HTMLElement | null = null;
+
+  private updateDominanceHud(): void {
+    if (!this.dominance || !this.started) return;
+    this.domRankEl ||= document.getElementById('dom-rank');
+    this.domFillEl ||= document.getElementById('dom-fill');
+    if (this.domRankEl) {
+      this.domRankEl.textContent = this.dominance.rankName;
+      this.domRankEl.classList.toggle('maxed', this.dominance.atMaxRank);
+    }
+    if (this.domFillEl) this.domFillEl.style.width = `${this.dominance.progressToNext * 100}%`;
+  }
+
+  private onDominanceRankUp(name: string): void {
+    this.runState.save(); // persist milestone
+    const el = document.getElementById('stage-toast')!;
+    el.classList.add('dom');
+    el.textContent = `Dominance ▸ ${name}`;
+    el.classList.remove('hidden');
+    void el.offsetWidth;
+    this.stageToastUntil = performance.now() + 2600;
+    const hud = document.getElementById('dominance-hud')!;
+    hud.classList.remove('rankup');
+    void hud.offsetWidth;
+    hud.classList.add('rankup');
   }
 
   /** Loop the current zone's background ambience (Shallow Veil vs deeper). */

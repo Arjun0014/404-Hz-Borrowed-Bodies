@@ -66,6 +66,8 @@ export class Ecosystem {
   paused = false;
   /** Called when a predator bites the host. Set by GameApp/PlayerCombat. */
   onHitPlayer: (dmg: number) => void = () => {};
+  /** Called when the player's bite kills a creature (for Dominance/score). */
+  onPlayerKill: (c: Creature) => void = () => {};
   private playerThreatT = 0;
   private terrain: TerrainLike | null = null;
   private colliders: CylinderCollider[] = [];
@@ -382,6 +384,7 @@ export class Ecosystem {
       const died = edible ? c.takeDamage(9999) : c.takeDamage(damage);
       if (edible && died) eaten++;
       else if (died) killed++;
+      if (died) this.onPlayerKill(c); // Dominance credit for the defeat
       // Biomass is a CHUNK proportional to the fish's size (a chunk of a big
       // fish is worth more), plus a bonus for finishing/eating it whole.
       biomass += c.length * BITE_CHUNK;

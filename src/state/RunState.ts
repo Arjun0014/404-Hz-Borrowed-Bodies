@@ -9,8 +9,10 @@ export interface RunStateData {
   /** Zone index: 0 = Shallow Veil, 1+ = deeper. */
   depth: number;
   score: number;
-  /** Dominance placeholder (real system arrives in Phase 6). */
+  /** Accumulated Dominance points (Phase 6). Persists across hosts + descents. */
   dominance: number;
+  /** Kills per species this run — powers Dominance diminishing returns. */
+  speciesKills: Record<string, number>;
   stats: {
     descents: number;
     timeSeconds: number;
@@ -31,10 +33,13 @@ export class RunState {
       depth: 0,
       score: 0,
       dominance: 0,
+      speciesKills: {},
       stats: { descents: 0, timeSeconds: 0 },
       seed: (Math.random() * 0xffffffff) >>> 0,
       ...data,
     };
+    // A save from before speciesKills existed loads without it.
+    if (!this.data.speciesKills) this.data.speciesKills = {};
   }
 
   descend(): void {

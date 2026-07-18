@@ -5,6 +5,7 @@ import {
   CanvasTexture,
   Color,
   ConeGeometry,
+  CylinderGeometry,
   DirectionalLight,
   DoubleSide,
   FogExp2,
@@ -23,12 +24,14 @@ import {
   Quaternion,
   Scene,
   ShaderMaterial,
+  SphereGeometry,
   Sprite,
   SpriteMaterial,
   TorusGeometry,
   Vector3,
   WebGLRenderer,
 } from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { FOG, WORLD } from '../config';
 import { Terrain } from './Terrain';
 
@@ -42,10 +45,14 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+interface SwayMat extends MeshStandardMaterial {
+  userData: { shader?: { uniforms: { uTime: { value: number } } } };
+}
+
 /**
- * The Shallow Veil zone: terrain, lighting, fog, surface, ambient particles,
- * rocks, kelp, distant silhouettes, and the descent-point placeholder.
- * Owns everything zone-scoped and can fully dispose itself (Phase 2 depends on it).
+ * The Shallow Veil: sunlit blue-green shelf with seagrass meadows, boulder
+ * fields, coral reefs, kelp stands, god rays, and the descent pit.
+ * Owns everything zone-scoped and can fully dispose itself.
  */
 export class ShallowVeil {
   readonly group = new Group();
@@ -63,7 +70,9 @@ export class ShallowVeil {
   private particleMat!: ShaderMaterial;
   private particles!: Points;
   private surfaceMat!: ShaderMaterial;
-  private kelpMats: MeshStandardMaterial[] = [];
+  private rayMat!: MeshBasicMaterial;
+  private rayGroup!: Group;
+  private swayMats: SwayMat[] = [];
   private markerRing!: Mesh;
   private markerLight!: PointLight;
   private readonly disposables: { dispose(): void }[] = [];
@@ -79,17 +88,20 @@ export class ShallowVeil {
     // not), so distant objects dissolve into the backdrop seamlessly.
     this.scene.background = this.fogNow.copy(this.fogShallow);
 
-    this.hemi = new HemisphereLight(0xa5dcec, 0x14323d, 1.05);
+    this.hemi = new HemisphereLight(0xbfe8f5, 0x33554a, 1.15);
     this.group.add(this.hemi);
-    const sun = new DirectionalLight(0xd8f0f4, 1.5);
-    sun.position.set(60, 160, 30);
+    const sun = new DirectionalLight(0xfff1d6, 1.9);
+    sun.position.set(80, 150, 40);
     this.group.add(sun);
 
     this.group.add(this.terrain.build());
 
     this.buildSurface();
+    this.buildGodRays();
     this.buildParticles(particleScale);
     this.buildRocks();
+    this.buildSeagrass();
+    this.buildCoral();
     this.buildKelp();
     this.buildSilhouettes();
     this.buildDescentMarker();
@@ -97,19 +109,52 @@ export class ShallowVeil {
     this.scene.add(this.group);
   }
 
-  // ---- surface -------------------------------------------------------------
+  // ---- shared sway material -------------------------------------------------
+
+  /**
+   * Standard material whose instances sway sinusoidally, phase from position.
+   * Base colour stays white: instanceColor MULTIPLIES with material colour, so
+   * a coloured base + coloured tint = near black.
+   */
+  private makeSwayMaterial(strengthX: number, strengthZ: number, speed: number): SwayMat {
+    const mat = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, side: DoubleSide }) as SwayMat;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = { value: 0 };
+      mat.userData.shader = shader as unknown as SwayMat['userData']['shader'];
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          `
+          #include <begin_vertex>
+          #ifdef USE_INSTANCING
+          {
+            vec2 ipos = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+            float ph = ipos.x * 0.41 + ipos.y * 0.57;
+            float f = pow(uv.y, 1.6);
+            transformed.x += sin(uTime * ${speed.toFixed(2)} + ph) * ${strengthX.toFixed(2)} * f;
+            transformed.z += cos(uTime * ${(speed * 0.74).toFixed(2)} + ph * 1.3) * ${strengthZ.toFixed(2)} * f;
+          }
+          #endif
+          `,
+        );
+    };
+    this.swayMats.push(mat);
+    this.disposables.push(mat);
+    return mat;
+  }
+
+  // ---- surface + god rays ---------------------------------------------------
 
   private buildSurface(): void {
     const geo = new PlaneGeometry(1400, 1400, 1, 1);
-    geo.rotateX(Math.PI / 2); // faces downward (visible from below)
+    geo.rotateX(Math.PI / 2);
     this.surfaceMat = new ShaderMaterial({
       transparent: true,
       depthWrite: false,
       side: DoubleSide,
       fog: false,
-      uniforms: {
-        uTime: { value: 0 },
-      },
+      uniforms: { uTime: { value: 0 } },
       vertexShader: /* glsl */ `
         varying vec3 vWorld;
         void main() {
@@ -124,11 +169,12 @@ export class ShallowVeil {
           vec2 p = vWorld.xz * 0.05;
           float w = sin(p.x * 2.1 + uTime * 0.9) * sin(p.y * 1.7 - uTime * 0.7);
           w += sin((p.x + p.y) * 3.3 + uTime * 1.3) * 0.5;
+          w += sin(p.x * 7.7 - uTime * 1.7) * sin(p.y * 6.1 + uTime * 1.1) * 0.25;
           w = w * 0.5 + 0.5;
-          vec3 col = mix(vec3(0.13, 0.35, 0.42), vec3(0.55, 0.85, 0.9), w * 0.55);
+          vec3 col = mix(vec3(0.16, 0.42, 0.5), vec3(0.72, 0.95, 0.98), w * 0.6);
           float dist = length(vWorld.xz);
-          float fade = 1.0 - smoothstep(250.0, 650.0, dist);
-          gl_FragColor = vec4(col, (0.28 + w * 0.22) * fade);
+          float fade = 1.0 - smoothstep(220.0, 620.0, dist);
+          gl_FragColor = vec4(col, (0.3 + w * 0.28) * fade);
         }
       `,
     });
@@ -143,9 +189,9 @@ export class ShallowVeil {
     canvas.width = canvas.height = 128;
     const ctx = canvas.getContext('2d')!;
     const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 64);
-    grad.addColorStop(0, 'rgba(230, 250, 245, 0.9)');
-    grad.addColorStop(0.35, 'rgba(160, 225, 220, 0.35)');
-    grad.addColorStop(1, 'rgba(120, 200, 210, 0)');
+    grad.addColorStop(0, 'rgba(235, 252, 248, 0.95)');
+    grad.addColorStop(0.35, 'rgba(170, 230, 225, 0.4)');
+    grad.addColorStop(1, 'rgba(130, 205, 215, 0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 128, 128);
     const glowTex = new CanvasTexture(canvas);
@@ -157,16 +203,81 @@ export class ShallowVeil {
       fog: false,
     });
     const glow = new Sprite(glowMat);
-    glow.scale.setScalar(220);
-    glow.position.set(60, WORLD.surfaceY + 30, 30);
+    glow.scale.setScalar(260);
+    glow.position.set(80, WORLD.surfaceY + 25, 40);
     this.group.add(glow);
     this.disposables.push(glowTex, glowMat);
   }
 
-  // ---- suspended particles -------------------------------------------------
+  private buildGodRays(): void {
+    // Streak texture: bright vertical shaft fading at edges and bottom.
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+    const gx = ctx.createLinearGradient(0, 0, 128, 0);
+    gx.addColorStop(0, 'rgba(255,255,255,0)');
+    gx.addColorStop(0.5, 'rgba(255,255,255,0.9)');
+    gx.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gx;
+    ctx.fillRect(0, 0, 128, 256);
+    const gy = ctx.createLinearGradient(0, 0, 0, 256);
+    gy.addColorStop(0, 'rgba(255,255,255,1)');
+    gy.addColorStop(0.75, 'rgba(255,255,255,0.35)');
+    gy.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.fillStyle = gy;
+    ctx.fillRect(0, 0, 128, 256);
+    const tex = new CanvasTexture(canvas);
+
+    this.rayMat = new MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      side: DoubleSide,
+      fog: false,
+      color: 0xbfeadd,
+      opacity: 0.0,
+    });
+    this.disposables.push(tex, this.rayMat);
+
+    // Merge 10 tilted planes into one draw call; the group follows the camera.
+    const rand = mulberry32(515);
+    const parts: BufferGeometry[] = [];
+    for (let i = 0; i < 10; i++) {
+      const g = new PlaneGeometry(14 + rand() * 22, 120 + rand() * 40);
+      const m = new Matrix4();
+      const q = new Quaternion();
+      const tilt = new Quaternion();
+      q.setFromAxisAngle(new Vector3(0, 1, 0), rand() * Math.PI);
+      tilt.setFromAxisAngle(new Vector3(0, 0, 1), (rand() - 0.5) * 0.35);
+      q.multiply(tilt);
+      const a = rand() * Math.PI * 2;
+      const r = 12 + rand() * 55;
+      m.compose(
+        new Vector3(Math.cos(a) * r, WORLD.surfaceY - 58, Math.sin(a) * r),
+        q,
+        new Vector3(1, 1, 1),
+      );
+      g.applyMatrix4(m);
+      parts.push(g);
+    }
+    const merged = mergeGeometries(parts);
+    for (const p of parts) p.dispose();
+    this.disposables.push(merged);
+    this.rayGroup = new Group();
+    const mesh = new Mesh(merged, this.rayMat);
+    mesh.frustumCulled = false;
+    this.rayGroup.add(mesh);
+    this.rayGroup.renderOrder = 3;
+    this.group.add(this.rayGroup);
+  }
+
+  // ---- suspended particles ---------------------------------------------------
 
   private buildParticles(scale: number): void {
-    const count = Math.floor(1500 * scale);
+    const count = Math.floor(1600 * scale);
     this.particleCount = count;
     const box = 46;
     const positions = new Float32Array(count * 3);
@@ -204,13 +315,12 @@ export class ShallowVeil {
           p.x += sin(uTime * 0.22 + aSeed * 1.7) * 1.6;
           p.y += sin(uTime * 0.16 + aSeed * 2.3) * 1.1 - uTime * 0.12;
           p.z += cos(uTime * 0.19 + aSeed * 1.1) * 1.6;
-          // Wrap the cloud around the camera so it is always present.
           vec3 rel = mod(p - uCamPos + uBox * 0.5, uBox) - uBox * 0.5;
           vec3 world = uCamPos + rel;
           vec4 mv = viewMatrix * vec4(world, 1.0);
           float dist = -mv.z;
-          vAlpha = (1.0 - smoothstep(uBox * 0.32, uBox * 0.5, dist)) * 0.5;
-          gl_PointSize = (36.0 / dist) * (1.2 + fract(aSeed) * 1.6) * uPixelRatio;
+          vAlpha = (1.0 - smoothstep(uBox * 0.32, uBox * 0.5, dist)) * 0.55;
+          gl_PointSize = (42.0 / dist) * (1.2 + fract(aSeed) * 1.6) * uPixelRatio;
           gl_Position = projectionMatrix * mv;
         }
       `,
@@ -219,7 +329,7 @@ export class ShallowVeil {
         void main() {
           float d = length(gl_PointCoord - 0.5);
           float a = smoothstep(0.5, 0.12, d) * vAlpha;
-          gl_FragColor = vec4(0.75, 0.9, 0.88, a * 0.4);
+          gl_FragColor = vec4(0.82, 0.94, 0.92, a * 0.45);
         }
       `,
     });
@@ -237,111 +347,238 @@ export class ShallowVeil {
     this.buildParticles(scale);
   }
 
-  // ---- rocks ---------------------------------------------------------------
+  // ---- placement helpers ------------------------------------------------------
+
+  /** Random spot avoiding the pit, the outer wall, and optionally steep ground. */
+  private pickSpot(
+    rand: () => number,
+    dropMargin: number,
+    maxSlope = 10,
+  ): { x: number; z: number } {
+    for (let tries = 0; tries < 60; tries++) {
+      const a = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand()) * (WORLD.playableRadius - 12);
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      const dDrop = Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z);
+      if (dDrop < WORLD.dropRadius + dropMargin) continue;
+      if (maxSlope < 10 && this.terrain.slopeAt(x, z) > maxSlope) continue;
+      return { x, z };
+    }
+    return { x: 0, z: 0 };
+  }
+
+  // ---- rocks -------------------------------------------------------------------
 
   private buildRocks(): void {
     const rand = mulberry32(9001);
-    const mat = new MeshStandardMaterial({ color: 0x5a626b, roughness: 1 });
+    const mat = new MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
     this.disposables.push(mat);
-    const variants = 3;
-    const perVariant = 46;
+    const tint = new Color();
     const m = new Matrix4();
     const q = new Quaternion();
     const up = new Vector3(0, 1, 0);
     const scl = new Vector3();
     const posV = new Vector3();
 
-    for (let v = 0; v < variants; v++) {
+    for (let v = 0; v < 3; v++) {
+      // Smooth boulders: gentle low-frequency displacement only.
       const geo = new IcosahedronGeometry(1, 2);
       const p = geo.attributes.position as BufferAttribute;
+      const vr = mulberry32(v * 977 + 5);
+      const nx = vr() * 7;
+      const nz = vr() * 7;
       for (let i = 0; i < p.count; i++) {
-        const n = 0.72 + mulberry32(i * 31 + v * 977)() * 0.55;
-        p.setXYZ(i, p.getX(i) * n, p.getY(i) * n * 0.82, p.getZ(i) * n);
+        const dir = new Vector3(p.getX(i), p.getY(i), p.getZ(i)).normalize();
+        const n =
+          1 +
+          (Math.sin(dir.x * 2.4 + nx) * Math.sin(dir.z * 2.1 + nz) * 0.5 +
+            Math.sin(dir.y * 3.1 + nx) * 0.5) *
+            0.2;
+        p.setXYZ(i, dir.x * n, dir.y * n * 0.72, dir.z * n);
       }
       geo.computeVertexNormals();
       this.disposables.push(geo);
 
-      const mesh = new InstancedMesh(geo, mat, perVariant + (v === 0 ? 6 : 0));
+      const count = 60 + (v === 0 ? 6 : 0);
+      const mesh = new InstancedMesh(geo, mat, count);
       let idx = 0;
-      for (let i = 0; i < perVariant; i++) {
-        const { x, z } = this.pickSpot(rand, 30);
-        const s = 0.9 + rand() * rand() * 5.5;
-        scl.set(s * (0.8 + rand() * 0.5), s * (0.7 + rand() * 0.5), s * (0.8 + rand() * 0.5));
+      for (let i = 0; i < 60; i++) {
+        const { x, z } = this.pickSpot(rand, 25);
+        const s = 0.7 + rand() * rand() * 4.5;
+        scl.set(s * (0.85 + rand() * 0.4), s * (0.7 + rand() * 0.4), s * (0.85 + rand() * 0.4));
         q.setFromAxisAngle(up, rand() * Math.PI * 2);
-        posV.set(x, this.terrain.heightAt(x, z) + s * 0.18, z);
+        posV.set(x, this.terrain.heightAt(x, z) + s * 0.12, z);
         m.compose(posV, q, scl);
-        mesh.setMatrixAt(idx++, m);
+        mesh.setMatrixAt(idx, m);
+        // Grey-green tint variation.
+        tint.setHSL(0.3 + rand() * 0.1, 0.1 + rand() * 0.12, 0.28 + rand() * 0.14);
+        mesh.setColorAt(idx, tint);
+        idx++;
       }
-      // A few giant landmark rocks on variant 0.
       if (v === 0) {
+        // Landmark monoliths.
         for (let i = 0; i < 6; i++) {
-          const { x, z } = this.pickSpot(rand, 60);
-          const s = 10 + rand() * 8;
-          scl.set(s, s * (0.9 + rand() * 0.6), s);
+          const { x, z } = this.pickSpot(rand, 55);
+          const s = 9 + rand() * 8;
+          scl.set(s, s * (1.1 + rand() * 0.7), s);
           q.setFromAxisAngle(up, rand() * Math.PI * 2);
           posV.set(x, this.terrain.heightAt(x, z) + s * 0.1, z);
           m.compose(posV, q, scl);
-          mesh.setMatrixAt(idx++, m);
+          mesh.setMatrixAt(idx, m);
+          tint.setHSL(0.5, 0.12, 0.33);
+          mesh.setColorAt(idx, tint);
+          idx++;
         }
       }
       mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.group.add(mesh);
     }
   }
 
-  /** Random placement avoiding the pit, the spawn area, and the outer wall. */
-  private pickSpot(rand: () => number, dropMargin: number): { x: number; z: number } {
-    for (let tries = 0; tries < 40; tries++) {
-      const a = rand() * Math.PI * 2;
-      const r = Math.sqrt(rand()) * (WORLD.playableRadius - 12);
-      const x = Math.cos(a) * r;
-      const z = Math.sin(a) * r;
-      const dDrop = Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z);
-      const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
-      if (dDrop > WORLD.dropRadius + dropMargin && dSpawn > 22) return { x, z };
+  // ---- seagrass meadows ----------------------------------------------------------
+
+  private buildSeagrass(): void {
+    const rand = mulberry32(6060);
+    const geo = new PlaneGeometry(0.11, 0.95, 1, 3);
+    geo.translate(0, 0.48, 0);
+    const mat = this.makeSwayMaterial(0.3, 0.22, 1.35);
+    this.disposables.push(geo);
+
+    const patches = 42;
+    const perPatch = 60;
+    const mesh = new InstancedMesh(geo, mat, patches * perPatch);
+    const m = new Matrix4();
+    const q = new Quaternion();
+    const up = new Vector3(0, 1, 0);
+    const s = new Vector3();
+    const p = new Vector3();
+    const tint = new Color();
+    let idx = 0;
+
+    // One guaranteed meadow just ahead of spawn so the first view is dressed.
+    const centers: { x: number; z: number }[] = [
+      { x: WORLD.spawn.x + 14, z: WORLD.spawn.z + 2 },
+    ];
+    while (centers.length < patches) centers.push(this.pickSpot(rand, 30, 0.5));
+
+    for (const c of centers) {
+      for (let i = 0; i < perPatch; i++) {
+        const a = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * (3.5 + rand() * 4);
+        const x = c.x + Math.cos(a) * rr;
+        const z = c.z + Math.sin(a) * rr;
+        const sc = 0.7 + rand() * 0.9;
+        s.set(sc, sc * (0.75 + rand() * 0.7), sc);
+        q.setFromAxisAngle(up, rand() * Math.PI * 2);
+        p.set(x, this.terrain.heightAt(x, z) - 0.03, z);
+        m.compose(p, q, s);
+        mesh.setMatrixAt(idx, m);
+        tint.setHSL(0.24 + rand() * 0.09, 0.5, 0.38 + rand() * 0.22);
+        mesh.setColorAt(idx, tint);
+        idx++;
+      }
     }
-    return { x: 0, z: 0 };
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    this.group.add(mesh);
   }
 
-  // ---- kelp ----------------------------------------------------------------
+  // ---- coral reefs -----------------------------------------------------------------
+
+  private buildCoral(): void {
+    const rand = mulberry32(3131);
+
+    // Branch coral: merged cones fanning upward.
+    const branchParts: BufferGeometry[] = [];
+    const br = mulberry32(88);
+    for (let k = 0; k < 6; k++) {
+      const g = new ConeGeometry(0.05 + br() * 0.04, 0.55 + br() * 0.5, 5);
+      const mm = new Matrix4();
+      const qq = new Quaternion();
+      qq.setFromAxisAngle(new Vector3(1, 0, 0), (br() - 0.5) * 1.1);
+      const yaw = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), br() * Math.PI * 2);
+      yaw.multiply(qq);
+      mm.compose(new Vector3((br() - 0.5) * 0.3, 0.3 + br() * 0.2, (br() - 0.5) * 0.3), yaw, new Vector3(1, 1, 1));
+      g.applyMatrix4(mm);
+      branchParts.push(g);
+    }
+    const branchGeo = mergeGeometries(branchParts);
+    for (const g of branchParts) g.dispose();
+
+    // Tube coral: merged upright cylinders.
+    const tubeParts: BufferGeometry[] = [];
+    const tr = mulberry32(99);
+    for (let k = 0; k < 5; k++) {
+      const h = 0.28 + tr() * 0.5;
+      const g = new CylinderGeometry(0.07 + tr() * 0.05, 0.11 + tr() * 0.05, h, 6);
+      g.translate((tr() - 0.5) * 0.42, h / 2, (tr() - 0.5) * 0.42);
+      tubeParts.push(g);
+    }
+    const tubeGeo = mergeGeometries(tubeParts);
+    for (const g of tubeParts) g.dispose();
+
+    // Mound coral: squashed sphere.
+    const moundGeo = new SphereGeometry(0.5, 9, 7);
+    moundGeo.scale(1, 0.55, 1);
+
+    const sets: { geo: BufferGeometry; color: number; count: number; hue: number }[] = [
+      { geo: branchGeo, color: 0xc7603c, count: 60, hue: 0.05 },
+      { geo: tubeGeo, color: 0x9a5fb8, count: 55, hue: 0.78 },
+      { geo: moundGeo, color: 0xd88f7a, count: 50, hue: 0.04 },
+    ];
+
+    // Reef cluster centers; one guaranteed by the spawn meadow.
+    const reefCenters: { x: number; z: number }[] = [
+      { x: WORLD.spawn.x + 20, z: WORLD.spawn.z - 6 },
+    ];
+    while (reefCenters.length < 14) reefCenters.push(this.pickSpot(rand, 30, 0.55));
+
+    const m = new Matrix4();
+    const q = new Quaternion();
+    const up = new Vector3(0, 1, 0);
+    const s = new Vector3();
+    const p = new Vector3();
+    const tint = new Color();
+
+    for (const set of sets) {
+      const mesh = new InstancedMesh(set.geo, new MeshStandardMaterial({ color: set.color, roughness: 0.8 }), set.count);
+      this.disposables.push(set.geo, mesh.material as MeshStandardMaterial);
+      for (let i = 0; i < set.count; i++) {
+        const c = reefCenters[Math.floor(rand() * reefCenters.length)];
+        const a = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * 7;
+        const x = c.x + Math.cos(a) * rr;
+        const z = c.z + Math.sin(a) * rr;
+        const sc = 0.8 + rand() * 1.6;
+        s.set(sc, sc * (0.8 + rand() * 0.5), sc);
+        q.setFromAxisAngle(up, rand() * Math.PI * 2);
+        p.set(x, this.terrain.heightAt(x, z) + 0.02, z);
+        m.compose(p, q, s);
+        mesh.setMatrixAt(i, m);
+        tint.setHSL(set.hue + (rand() - 0.5) * 0.06, 0.5 + rand() * 0.25, 0.5 + rand() * 0.2);
+        mesh.setColorAt(i, tint);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      this.group.add(mesh);
+    }
+  }
+
+  // ---- kelp stands ------------------------------------------------------------------
 
   private buildKelp(): void {
     const rand = mulberry32(4242);
     const configs = [
-      { height: 4.5, width: 0.42, count: 110, color: 0x2e5b3a },
-      { height: 7.5, width: 0.55, count: 70, color: 0x27503c },
+      { height: 5, width: 0.55, count: 120, sway: 0.55 },
+      { height: 8.5, width: 0.7, count: 80, sway: 0.7 },
     ];
     for (const cfg of configs) {
-      const geo = new PlaneGeometry(cfg.width, cfg.height, 1, 7);
+      const geo = new PlaneGeometry(cfg.width, cfg.height, 1, 8);
       geo.translate(0, cfg.height / 2, 0);
-      const mat = new MeshStandardMaterial({
-        color: cfg.color,
-        roughness: 0.9,
-        side: DoubleSide,
-      });
-      mat.onBeforeCompile = (shader) => {
-        shader.uniforms.uTime = { value: 0 };
-        (mat.userData as { shader?: unknown }).shader = shader;
-        shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', '#include <common>\nuniform float uTime;')
-          .replace(
-            '#include <begin_vertex>',
-            `
-            #include <begin_vertex>
-            #ifdef USE_INSTANCING
-            {
-              vec2 ipos = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
-              float ph = ipos.x * 0.37 + ipos.y * 0.53;
-              float f = pow(uv.y, 1.7);
-              transformed.x += sin(uTime * 0.85 + ph) * 0.55 * f;
-              transformed.z += cos(uTime * 0.63 + ph * 1.3) * 0.4 * f;
-            }
-            #endif
-            `,
-          );
-      };
-      this.kelpMats.push(mat);
-      this.disposables.push(geo, mat);
+      const mat = this.makeSwayMaterial(cfg.sway, cfg.sway * 0.7, 0.85);
+      this.disposables.push(geo);
 
       const mesh = new InstancedMesh(geo, mat, cfg.count);
       const m = new Matrix4();
@@ -349,50 +586,53 @@ export class ShallowVeil {
       const up = new Vector3(0, 1, 0);
       const s = new Vector3();
       const p = new Vector3();
-      // Clustered placement: pick cluster centers, scatter strands around them.
-      const clusters = Math.ceil(cfg.count / 14);
+      const tint = new Color();
+      const clusters = Math.ceil(cfg.count / 16);
       let idx = 0;
       for (let c = 0; c < clusters && idx < cfg.count; c++) {
-        const center = this.pickSpot(rand, 40);
-        for (let i = 0; i < 14 && idx < cfg.count; i++) {
-          const x = center.x + (rand() - 0.5) * 16;
-          const z = center.z + (rand() - 0.5) * 16;
+        const center = this.pickSpot(rand, 35, 0.6);
+        for (let i = 0; i < 16 && idx < cfg.count; i++) {
+          const x = center.x + (rand() - 0.5) * 14;
+          const z = center.z + (rand() - 0.5) * 14;
           const sc = 0.7 + rand() * 0.7;
           s.set(sc, sc * (0.8 + rand() * 0.5), sc);
           q.setFromAxisAngle(up, rand() * Math.PI * 2);
           p.set(x, this.terrain.heightAt(x, z) - 0.1, z);
           m.compose(p, q, s);
-          mesh.setMatrixAt(idx++, m);
+          mesh.setMatrixAt(idx, m);
+          tint.setHSL(0.3 + rand() * 0.07, 0.45, 0.34 + rand() * 0.16);
+          mesh.setColorAt(idx, tint);
+          idx++;
         }
       }
       mesh.count = idx;
       mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.group.add(mesh);
     }
   }
 
-  // ---- distant silhouettes -------------------------------------------------
+  // ---- distant silhouettes -------------------------------------------------------------
 
   private buildSilhouettes(): void {
     const rand = mulberry32(777);
-    const mat = new MeshBasicMaterial({ color: 0x143540 });
+    const mat = new MeshBasicMaterial({ color: 0x1a4050 });
     this.disposables.push(mat);
     for (let i = 0; i < 7; i++) {
       const a = (i / 7) * Math.PI * 2 + rand() * 0.5;
-      // Skip the drop-off direction so the pit's darkness reads clean.
       const dropA = Math.atan2(WORLD.dropCenter.z, WORLD.dropCenter.x);
       if (Math.abs(Math.atan2(Math.sin(a - dropA), Math.cos(a - dropA))) < 0.5) continue;
-      const geo = new ConeGeometry(30 + rand() * 35, 45 + rand() * 55, 5);
+      const geo = new ConeGeometry(35 + rand() * 40, 50 + rand() * 55, 6);
       this.disposables.push(geo);
       const mesh = new Mesh(geo, mat);
-      const r = 300 + rand() * 45;
+      const r = 315 + rand() * 45;
       mesh.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
       mesh.rotation.y = rand() * Math.PI;
       this.group.add(mesh);
     }
   }
 
-  // ---- descent marker (placeholder for Phase 2) ----------------------------
+  // ---- descent marker (placeholder for Phase 2) ------------------------------------------
 
   private buildDescentMarker(): void {
     const rimX = WORLD.dropCenter.x - WORLD.dropRadius * 0.72;
@@ -417,7 +657,7 @@ export class ShallowVeil {
     return out.copy(this.markerRing.position);
   }
 
-  // ---- frame update --------------------------------------------------------
+  // ---- frame update ------------------------------------------------------------------------
 
   update(dt: number, camera: PerspectiveCamera, renderer: WebGLRenderer): void {
     this.time += dt;
@@ -428,9 +668,8 @@ export class ShallowVeil {
     this.particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
     this.surfaceMat.uniforms.uTime.value = this.time;
 
-    for (const mat of this.kelpMats) {
-      const shader = (mat.userData as { shader?: { uniforms: { uTime: { value: number } } } }).shader;
-      if (shader) shader.uniforms.uTime.value = this.time;
+    for (const mat of this.swayMats) {
+      if (mat.userData.shader) mat.userData.shader.uniforms.uTime.value = this.time;
     }
 
     // Depth-graded water colour: darker as the camera sinks.
@@ -438,7 +677,12 @@ export class ShallowVeil {
     const depth01 = Math.min(1, Math.max(0, (WORLD.surfaceY - camera.position.y) / 90));
     this.fogNow.copy(this.fogShallow).lerp(this.fogDeep, depth01 * depth01 * 0.9 + depth01 * 0.1);
     this.fog.color.copy(this.fogNow);
-    this.hemi.intensity = 1.05 - depth01 * 0.45;
+    this.hemi.intensity = 1.15 - depth01 * 0.45;
+
+    // God rays: follow the camera, fade with depth, gentle shimmer.
+    this.rayGroup.position.set(camera.position.x, 0, camera.position.z);
+    const shallowness = Math.pow(1 - depth01, 1.4);
+    this.rayMat.opacity = (0.1 + Math.sin(this.time * 0.7) * 0.025) * shallowness;
 
     // Marker pulse.
     const pulse = 0.5 + Math.sin(this.time * 2.2) * 0.5;

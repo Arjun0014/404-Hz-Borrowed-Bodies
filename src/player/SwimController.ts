@@ -31,7 +31,7 @@ export class SwimController {
     private readonly camera: PlayerCamera,
     private readonly terrain: Terrain,
   ) {
-    this.pos.set(WORLD.spawn.x, this.terrain.heightAt(WORLD.spawn.x, WORLD.spawn.z) + 7, WORLD.spawn.z);
+    this.pos.set(WORLD.spawn.x, this.terrain.heightAt(WORLD.spawn.x, WORLD.spawn.z) + 3, WORLD.spawn.z);
     this.fish.object.position.copy(this.pos);
     // Face +X (toward the drop-off) to match the camera's spawn yaw.
     this.fish.object.quaternion.setFromAxisAngle(UP, Math.PI / 2);

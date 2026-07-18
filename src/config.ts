@@ -27,7 +27,7 @@ export const WORLD = {
 export const STEERING_SCHEME: 'A' | 'B' = 'A';
 
 export const FOG = {
-  shallowColor: 0x2e6f80,
-  deepColor: 0x081b26,
-  density: 0.0092,
+  shallowColor: 0x3d89a6,
+  deepColor: 0x0a2433,
+  density: 0.0058,
 } as const;

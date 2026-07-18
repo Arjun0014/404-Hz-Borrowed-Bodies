@@ -39,7 +39,7 @@ export const DARTFISH: SpeciesDef = {
   id: 'dartfish',
   displayName: 'Dartfish',
   modelUrl: clownFishUrl,
-  baseLength: 0.42,
+  baseLength: 0.5,
   flipForward: false,
   movement: {
     maxSpeed: 6.2,
@@ -50,9 +50,9 @@ export const DARTFISH: SpeciesDef = {
     verticalFactor: 0.85,
   },
   camera: {
-    distanceFactor: 7.5,
-    minDistance: 2.4,
-    heightFactor: 2.2,
+    distanceFactor: 5.6,
+    minDistance: 2.0,
+    heightFactor: 1.9,
     baseFov: 60,
   },
 };

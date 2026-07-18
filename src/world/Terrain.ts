@@ -57,9 +57,9 @@ function lerp(a: number, b: number, t: number): number {
 // ---- terrain --------------------------------------------------------------
 
 /**
- * Analytic heightfield for the Shallow Veil: rolling shelf, rising edge walls,
- * and a deep drop-off pit at the future descent point. Because the height is a
- * pure function, rendering and collision always agree.
+ * Analytic heightfield for the Shallow Veil: sand dunes, rocky ridges, rising
+ * edge walls, and a deep drop-off pit at the future descent point. Height is a
+ * pure function so rendering and collision always agree.
  */
 export class Terrain {
   mesh!: Mesh;
@@ -67,8 +67,14 @@ export class Terrain {
 
   /** World-space seabed height at (x, z). */
   heightAt(x: number, z: number): number {
-    let h = 5.5 + fbm(x * 0.008 + 11.7, z * 0.008 + 3.1, 4) * 11;
-    h += fbm(x * 0.045 + 7.3, z * 0.045 + 9.9, 3) * 2.2;
+    // Rolling dunes.
+    let h = 6 + fbm(x * 0.008 + 11.7, z * 0.008 + 3.1, 4) * 9;
+    // Rocky ridge lines rising out of the sand.
+    const rn = fbm(x * 0.014 + 31.2, z * 0.014 + 17.6, 3);
+    const ridged = 1 - Math.abs(2 * rn - 1);
+    h += ridged * ridged * ridged * 7;
+    // Fine relief.
+    h += fbm(x * 0.05 + 7.3, z * 0.05 + 9.9, 3) * 1.4;
 
     const r = Math.hypot(x, z);
     const dx = x - WORLD.dropCenter.x;
@@ -87,7 +93,7 @@ export class Terrain {
     return h;
   }
 
-  /** Approximate surface normal via central differences (for placement/effects). */
+  /** Approximate slope magnitude (for placement rules and colouring). */
   slopeAt(x: number, z: number): number {
     const e = 1.5;
     const dhx = this.heightAt(x + e, z) - this.heightAt(x - e, z);
@@ -96,16 +102,19 @@ export class Terrain {
   }
 
   build(): Mesh {
-    const segs = 240;
+    const segs = 288;
     const geo = new PlaneGeometry(WORLD.size, WORLD.size, segs, segs);
     geo.rotateX(-Math.PI / 2);
 
     const pos = geo.attributes.position as BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
-    const sand = new Color(0x8a7f5f);
-    const rock = new Color(0x46525a);
-    const deep = new Color(0x0c1e28);
+    const sandLight = new Color(0x84775a).multiplyScalar(1.28);
+    const sandDark = new Color(0x6f6248);
+    const algae = new Color(0x3f5c40);
+    const rock = new Color(0x565e63);
+    const deep = new Color(0x0a1c26);
     const tmp = new Color();
+    const tmp2 = new Color();
 
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
@@ -113,13 +122,20 @@ export class Terrain {
       const h = this.heightAt(x, z);
       pos.setY(i, h);
 
-      const slope = this.slopeAt(x, z);
-      const rockT = smoothstep(0.35, 0.9, slope);
-      tmp.copy(sand).lerp(rock, rockT);
-      // Variation + darkening toward the pit.
-      const vary = 0.82 + fbm(x * 0.09, z * 0.09, 2) * 0.36;
-      tmp.multiplyScalar(vary);
-      tmp.lerp(deep, smoothstep(4, -30, h));
+      // Sand: light/dark patchwork.
+      const patch = fbm(x * 0.022 + 4.4, z * 0.022 + 8.8, 3);
+      tmp.copy(sandDark).lerp(sandLight, smoothstep(0.3, 0.7, patch));
+      // Algae mats on some flats.
+      const algaeT = smoothstep(0.6, 0.78, fbm(x * 0.017 + 21.3, z * 0.017 + 2.7, 3));
+      tmp.lerp(tmp2.copy(algae), algaeT * 0.85);
+      // Exposed rock on slopes.
+      const rockT = smoothstep(0.45, 1.05, this.slopeAt(x, z));
+      tmp.lerp(tmp2.copy(rock), rockT);
+      // Grain variation.
+      tmp.multiplyScalar(0.9 + fbm(x * 0.09, z * 0.09, 2) * 0.2);
+      // Fade to abyss colour toward the pit.
+      tmp.lerp(tmp2.copy(deep), smoothstep(4, -32, h));
+
       colors[i * 3] = tmp.r;
       colors[i * 3 + 1] = tmp.g;
       colors[i * 3 + 2] = tmp.b;
@@ -130,7 +146,7 @@ export class Terrain {
 
     const mat = new MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.95,
+      roughness: 0.94,
       metalness: 0,
     });
     mat.onBeforeCompile = (shader) => {
@@ -144,24 +160,46 @@ export class Terrain {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\nvarying vec3 vWorldPos;\nuniform float uTime;',
+          `#include <common>
+          varying vec3 vWorldPos;
+          uniform float uTime;
+          float tHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float tNoise(vec2 p) {
+            vec2 i = floor(p); vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = tHash(i), b = tHash(i + vec2(1.0, 0.0));
+            float c = tHash(i + vec2(0.0, 1.0)), d = tHash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }`,
+        )
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          // Close-range sand grain + ripple detail so the seabed never reads flat.
+          {
+            float detailFade = 1.0 - smoothstep(14.0, 60.0, length(vViewPosition));
+            if (detailFade > 0.001) {
+              float grain = tNoise(vWorldPos.xz * 3.4) * 0.6 + tNoise(vWorldPos.xz * 11.0) * 0.4;
+              float ripple = sin(vWorldPos.x * 4.2 + vWorldPos.z * 1.3 + tNoise(vWorldPos.xz * 0.4) * 7.0);
+              diffuseColor.rgb *= mix(1.0, 0.9 + grain * 0.2 + ripple * 0.05, detailFade);
+            }
+          }`,
         )
         .replace(
           '#include <dithering_fragment>',
           `
-          // Animated caustic light ripples: subtle, larger cells, fading with
-          // both depth and camera distance so the pattern never dominates.
+          // Animated caustic light ripples, fading with depth and distance.
           {
             vec2 cuv = vWorldPos.xz;
             float c1 = sin(cuv.x * 0.31 + uTime * 0.9) * sin(cuv.y * 0.36 + uTime * 0.7);
             float c2 = sin((cuv.x + cuv.y) * 0.23 - uTime * 1.1);
             float c3 = sin(cuv.x * 0.13 - cuv.y * 0.17 + uTime * 0.55);
             float caust = pow(max(c1 * c2, 0.0), 2.0) + pow(max(c2 * c3, 0.0), 2.6) * 0.5;
-            // Large-scale patchiness breaks the repeating grid look.
-            float patch = 0.55 + 0.45 * sin(cuv.x * 0.045 + cuv.y * 0.038 + uTime * 0.12);
+            // NOTE: "patch" is a reserved word in GLSL ES 3.0 — never use it.
+            float patchy = 0.55 + 0.45 * sin(cuv.x * 0.045 + cuv.y * 0.038 + uTime * 0.12);
             float depthFade = clamp((vWorldPos.y + 4.0) / 26.0, 0.0, 1.0);
             float distFade = 1.0 - smoothstep(35.0, 110.0, length(vViewPosition));
-            gl_FragColor.rgb += vec3(0.55, 0.85, 0.8) * caust * patch * depthFade * distFade * 0.16;
+            gl_FragColor.rgb += vec3(0.55, 0.85, 0.8) * caust * patchy * depthFade * distFade * 0.2;
           }
           #include <dithering_fragment>
           `,

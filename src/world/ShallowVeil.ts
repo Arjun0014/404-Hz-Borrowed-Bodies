@@ -186,16 +186,37 @@ export class ShallowVeil {
       fragmentShader: /* glsl */ `
         uniform float uTime;
         varying vec3 vWorld;
+
+        float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float noise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+
+        // Domain-warped ridged noise → organic caustic cells (not sine bands).
+        float caustic(vec2 uv, float t) {
+          vec2 w = vec2(noise(uv * 1.1 + t), noise(uv * 1.1 - t + 4.3));
+          float n = noise(uv + w * 0.7);
+          float ridged = 1.0 - abs(n * 2.0 - 1.0);
+          return pow(ridged, 2.2);
+        }
+
         void main() {
-          vec2 p = vWorld.xz * 0.05;
-          float w = sin(p.x * 2.1 + uTime * 0.9) * sin(p.y * 1.7 - uTime * 0.7);
-          w += sin((p.x + p.y) * 3.3 + uTime * 1.3) * 0.5;
-          w += sin(p.x * 7.7 - uTime * 1.7) * sin(p.y * 6.1 + uTime * 1.1) * 0.25;
-          w = w * 0.5 + 0.5;
-          vec3 col = mix(vec3(0.16, 0.42, 0.5), vec3(0.72, 0.95, 0.98), w * 0.6);
+          vec2 uv = vWorld.xz * 0.045;
+          float t = uTime * 0.09;
+          // Two octaves drifting in different directions for shimmer.
+          float c = caustic(uv, t) * 0.65 + caustic(uv * 2.3 + 7.0, -t * 1.4) * 0.35;
+
+          vec3 deep = vec3(0.13, 0.36, 0.44);
+          vec3 bright = vec3(0.78, 0.96, 0.99);
+          vec3 col = mix(deep, bright, c);
+
           float dist = length(vWorld.xz);
-          float fade = 1.0 - smoothstep(220.0, 620.0, dist);
-          gl_FragColor = vec4(col, (0.3 + w * 0.28) * fade);
+          float fade = 1.0 - smoothstep(180.0, 560.0, dist);
+          gl_FragColor = vec4(col, (0.22 + c * 0.42) * fade);
         }
       `,
     });
@@ -215,6 +236,9 @@ export class ShallowVeil {
     // planes flickered badly when looking straight up at the sun. The radial
     // streaks emanate from the sun disc, which is exactly what you should see
     // when directly below the sun.
+    // A clean, soft sun glow — no hard radial spokes (those read as an ugly
+    // pinwheel underwater). Just a bright core diffusing smoothly into a wide
+    // halo, which is what sunlight through water actually looks like.
     const size = 512;
     const c = size / 2;
     const canvas = document.createElement('canvas');
@@ -224,38 +248,21 @@ export class ShallowVeil {
     ctx.fillRect(0, 0, size, size);
     ctx.globalCompositeOperation = 'lighter';
 
-    // Soft central sun glow.
-    const glow = ctx.createRadialGradient(c, c, 2, c, c, c * 0.55);
-    glow.addColorStop(0, 'rgba(255,255,255,0.9)');
-    glow.addColorStop(0.25, 'rgba(220,245,240,0.35)');
-    glow.addColorStop(1, 'rgba(200,235,235,0)');
-    ctx.fillStyle = glow;
+    // Wide, very soft outer halo.
+    const halo = ctx.createRadialGradient(c, c, 4, c, c, c);
+    halo.addColorStop(0, 'rgba(210, 240, 240, 0.5)');
+    halo.addColorStop(0.4, 'rgba(190, 228, 232, 0.14)');
+    halo.addColorStop(1, 'rgba(180, 220, 228, 0)');
+    ctx.fillStyle = halo;
     ctx.fillRect(0, 0, size, size);
 
-    // Radial streaks of varying length and softness.
-    const rand = mulberry32(515);
-    const streaks = 46;
-    for (let i = 0; i < streaks; i++) {
-      const ang = (i / streaks) * Math.PI * 2 + (rand() - 0.5) * 0.12;
-      const len = c * (0.5 + rand() * 0.5);
-      const halfWidth = 0.006 + rand() * 0.02;
-      ctx.save();
-      ctx.translate(c, c);
-      ctx.rotate(ang);
-      const g = ctx.createLinearGradient(0, 0, len, 0);
-      const a = 0.08 + rand() * 0.14;
-      g.addColorStop(0, `rgba(255,255,255,${a})`);
-      g.addColorStop(0.5, `rgba(230,248,244,${a * 0.5})`);
-      g.addColorStop(1, 'rgba(220,240,240,0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(len, -len * halfWidth);
-      ctx.lineTo(len, len * halfWidth);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
+    // Bright, tight core.
+    const core = ctx.createRadialGradient(c, c, 1, c, c, c * 0.3);
+    core.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+    core.addColorStop(0.3, 'rgba(240, 250, 248, 0.5)');
+    core.addColorStop(1, 'rgba(220, 242, 242, 0)');
+    ctx.fillStyle = core;
+    ctx.fillRect(0, 0, size, size);
 
     const tex = new CanvasTexture(canvas);
     this.raySpriteMat = new SpriteMaterial({
@@ -270,7 +277,7 @@ export class ShallowVeil {
     this.disposables.push(tex, this.raySpriteMat);
 
     this.raySprite = new Sprite(this.raySpriteMat);
-    this.raySprite.scale.setScalar(220);
+    this.raySprite.scale.setScalar(190);
     // The existing dedicated sun-glow sprite (buildSurface) is now redundant
     // with this; keep only this radial one to avoid a double-bright disc.
     this.group.add(this.raySprite);
@@ -813,7 +820,7 @@ export class ShallowVeil {
     // every view angle — no flicker when orbiting or looking straight up.
     this.raySprite.position.copy(camera.position).addScaledVector(this.sunDir, 340);
     const shallowness = Math.pow(1 - depth01, 1.3);
-    this.raySpriteMat.opacity = (0.6 + Math.sin(this.time * 0.6) * 0.06) * shallowness;
+    this.raySpriteMat.opacity = (0.5 + Math.sin(this.time * 0.6) * 0.05) * shallowness;
 
     // Marker pulse.
     const pulse = 0.5 + Math.sin(this.time * 2.2) * 0.5;

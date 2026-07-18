@@ -2,9 +2,13 @@ import {
   ACESFilmicToneMapping,
   Scene,
   SRGBColorSpace,
+  TextureLoader,
   Vector3,
   WebGLRenderer,
 } from 'three';
+import type { TerrainMaps } from '../world/Terrain';
+import seabedDiffUrl from '../../assets/textures/coral_fort_wall_02/textures/coral_fort_wall_02_diff_1k.jpg';
+import seabedNorUrl from '../../assets/textures/coral_fort_wall_02/textures/coral_fort_wall_02_nor_gl_1k.jpg';
 import { Loop } from './Loop';
 import { Input } from './Input';
 import { AssetLoader } from './AssetLoader';
@@ -75,9 +79,27 @@ export class GameApp {
       fillEl.style.width = `${Math.round((l / Math.max(t, 1)) * 100)}%`;
     };
 
+    // Seabed texture set (Poly Haven coral_fort_wall_02, CC0). Non-fatal if
+    // it fails to load: the terrain falls back to its vertex-colour palette.
+    let maps: TerrainMaps | undefined;
+    try {
+      const texLoader = new TextureLoader();
+      const [map, normalMap] = await Promise.all([
+        texLoader.loadAsync(seabedDiffUrl),
+        texLoader.loadAsync(seabedNorUrl),
+      ]);
+      map.colorSpace = SRGBColorSpace;
+      const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+      map.anisotropy = aniso;
+      normalMap.anisotropy = aniso;
+      maps = { map, normalMap };
+    } catch (err) {
+      console.warn('[404hz] seabed textures failed to load, using fallback palette', err);
+    }
+
     // Build world + player.
     this.zone = new ShallowVeil(this.scene);
-    this.zone.build(this.renderer, this.quality.particleScale);
+    this.zone.build(this.renderer, this.quality.particleScale, maps);
 
     this.fish = await PlayerFish.create(this.loader, DARTFISH);
     this.scene.add(this.fish.object);
@@ -85,10 +107,17 @@ export class GameApp {
     this.playerCamera = new PlayerCamera(
       this.input,
       this.zone.terrain,
+      this.zone.colliders,
       window.innerWidth / window.innerHeight,
     );
     this.playerCamera.setHost(DARTFISH.camera, this.fish.length);
-    this.controller = new SwimController(this.fish, this.input, this.playerCamera, this.zone.terrain);
+    this.controller = new SwimController(
+      this.fish,
+      this.input,
+      this.playerCamera,
+      this.zone.terrain,
+      this.zone.colliders,
+    );
 
     loadingEl.classList.add('hidden');
     const titleEl = document.getElementById('title')!;

@@ -6,8 +6,8 @@ builder), delete the row here. Never treat a listed item as final art.
 
 | ID | Placeholder | Stands in for | Referenced in | Final asset spec | Status |
 |----|-------------|---------------|---------------|------------------|--------|
-| PH-TERRAIN | Procedural noise heightfield, vertex-coloured | Shallow Veil seabed with sculpted layout + textures | `src/world/Terrain.ts` | Seabed textures (albedo/normal), possibly authored heightmap | Active |
-| PH-ROCKS | Displaced icosahedron instanced rocks (3 variants) | Rock/coral `.glb` set | `src/world/ShallowVeil.ts` `buildRocks` | Rock + coral `.glb`, ≤2k tris each, 1024² textures | Active |
+| PH-TERRAIN | Procedural heightfield now textured with user-supplied coral_fort_wall_02 (diff+normal) | Authored zone layout if ever needed | `src/world/Terrain.ts` | Layout is procedural but shippable; texture is real | Partially resolved |
+| PH-ROCKS | Instanced boulders/spires with real coral-stone texture, procedural geometry | Rock/coral `.glb` set | `src/world/ShallowVeil.ts` `buildRocks`/`buildSpires` | Rock + coral `.glb`, ≤2k tris each, 1024² textures | Active (geometry only) |
 | PH-KELP | Swaying flat blades (2 variants, instanced) | Kelp / sea-grass `.glb` or cards with textures | `src/world/ShallowVeil.ts` `buildKelp` | Kelp `.glb` or alpha-cutout card set | Active |
 | PH-CAUSTICS | Procedural trig-pattern caustics in terrain shader | Caustics texture sequence | `src/world/Terrain.ts` shader inject | Animated caustic texture (or keep procedural if approved) | Active |
 | PH-PARTICLES | Round soft-dot shader points | Plankton/sediment sprite textures | `src/world/ShallowVeil.ts` `buildParticles` | Sediment/plankton sprite sheet (optional) | Active |

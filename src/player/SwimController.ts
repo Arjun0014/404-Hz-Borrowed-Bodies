@@ -1,6 +1,7 @@
 import { Quaternion, Vector3 } from 'three';
 import type { Input } from '../core/Input';
 import type { Terrain } from '../world/Terrain';
+import type { CylinderCollider } from '../world/ShallowVeil';
 import type { PlayerFish } from '../entities/PlayerFish';
 import type { PlayerCamera } from './PlayerCamera';
 import { STEERING_SCHEME, WORLD } from '../config';
@@ -30,6 +31,7 @@ export class SwimController {
     private readonly input: Input,
     private readonly camera: PlayerCamera,
     private readonly terrain: Terrain,
+    private readonly colliders: CylinderCollider[],
   ) {
     this.pos.set(WORLD.spawn.x, this.terrain.heightAt(WORLD.spawn.x, WORLD.spawn.z) + 3, WORLD.spawn.z);
     this.fish.object.position.copy(this.pos);
@@ -88,6 +90,32 @@ export class SwimController {
       this.pos.y = ceiling;
       if (this.vel.y > 0) this.vel.y = 0;
     }
+    // Solid obstacles (spires, monoliths): push out radially.
+    for (const c of this.colliders) {
+      if (this.pos.y > c.top + radius) continue;
+      let dx = this.pos.x - c.x;
+      let dz = this.pos.z - c.z;
+      let d = Math.hypot(dx, dz);
+      if (d < 1e-4) {
+        // Degenerate: exactly at the axis — pick any outward direction.
+        dx = 1;
+        dz = 0;
+        d = 1;
+      }
+      const minD = c.r + radius;
+      if (d < minD) {
+        const push = (minD - d) / d;
+        this.pos.x += dx * push;
+        this.pos.z += dz * push;
+        // Kill the inward velocity component.
+        const inward = (this.vel.x * dx + this.vel.z * dz) / (d * d);
+        if (inward < 0) {
+          this.vel.x -= dx * inward;
+          this.vel.z -= dz * inward;
+        }
+      }
+    }
+
     // Phase 1 pit floor: gentle upwelling blocks deep descent until Phase 2.
     const dDrop = Math.hypot(this.pos.x - WORLD.dropCenter.x, this.pos.z - WORLD.dropCenter.z);
     if (dDrop < WORLD.dropRadius && this.pos.y < WORLD.pitFloorY) {

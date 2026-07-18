@@ -1,6 +1,7 @@
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three';
 import type { Input } from '../core/Input';
 import type { Terrain } from '../world/Terrain';
+import type { CylinderCollider } from '../world/ShallowVeil';
 import type { CameraProfile } from '../data/species';
 import { WORLD } from '../config';
 
@@ -28,7 +29,12 @@ export class PlayerCamera {
   private readonly smoothPos = new Vector3();
   private initialized = false;
 
-  constructor(private readonly input: Input, private readonly terrain: Terrain, aspect: number) {
+  constructor(
+    private readonly input: Input,
+    private readonly terrain: Terrain,
+    private readonly colliders: CylinderCollider[],
+    aspect: number,
+  ) {
     this.profile = { distanceFactor: 7, minDistance: 2.4, heightFactor: 2, baseFov: 60 };
     this.hostLength = 0.4;
     this.baseDist = this.computeBaseDist();
@@ -77,7 +83,8 @@ export class PlayerCamera {
     );
     const height = this.hostLength * this.profile.heightFactor * 0.35;
 
-    // Collision: march from the target outwards, stop before terrain/surface.
+    // Collision: march from the target outwards; stop before terrain, the
+    // surface, or any solid obstacle (spires, monoliths).
     let usable = dist;
     const steps = 8;
     for (let i = 1; i <= steps; i++) {
@@ -86,7 +93,16 @@ export class PlayerCamera {
       const py = targetPos.y + back.y * t + height;
       const pz = targetPos.z + back.z * t;
       const ground = this.terrain.heightAt(px, pz);
-      if (py < ground + 0.5 || py > WORLD.surfaceY - 0.3) {
+      let blocked = py < ground + 0.5 || py > WORLD.surfaceY - 0.3;
+      if (!blocked) {
+        for (const c of this.colliders) {
+          if (py < c.top + 0.3 && Math.hypot(px - c.x, pz - c.z) < c.r + 0.35) {
+            blocked = true;
+            break;
+          }
+        }
+      }
+      if (blocked) {
         usable = Math.max(this.profile.minDistance * 0.6, ((i - 1) * dist) / steps);
         break;
       }
@@ -104,20 +120,21 @@ export class PlayerCamera {
       this.lookTarget.copy(targetPos);
       this.initialized = true;
     }
-    this.smoothPos.lerp(desired, Math.min(1, 11 * dt));
+    // Snappy tracking: heavy smoothing here reads as "swimming in jello".
+    this.smoothPos.lerp(desired, Math.min(1, 16 * dt));
     this.camera.position.copy(this.smoothPos);
 
     // Look slightly ahead of motion; no roll ever.
-    const look = TMP_A.copy(targetPos).addScaledVector(targetVel, 0.14);
+    const look = TMP_A.copy(targetPos).addScaledVector(targetVel, 0.07);
     look.y += height * 0.4;
-    this.lookTarget.lerp(look, Math.min(1, 13 * dt));
+    this.lookTarget.lerp(look, Math.min(1, 20 * dt));
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(this.lookTarget);
 
-    // Speed-reactive FOV.
-    const targetFov = this.profile.baseFov + speed01 * 7;
+    // Gentle speed-reactive FOV (kept subtle: FOV pumping feels weird).
+    const targetFov = this.profile.baseFov + speed01 * 4;
     if (Math.abs(targetFov - this.currentFov) > 0.05) {
-      this.currentFov += (targetFov - this.currentFov) * Math.min(1, 4 * dt);
+      this.currentFov += (targetFov - this.currentFov) * Math.min(1, 6 * dt);
       this.camera.fov = this.currentFov;
       this.camera.updateProjectionMatrix();
     }

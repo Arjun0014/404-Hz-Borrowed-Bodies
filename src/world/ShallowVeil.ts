@@ -32,8 +32,9 @@ import {
   WebGLRenderer,
 } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { CircleGeometry, RepeatWrapping, type Texture } from 'three';
 import { FOG, WORLD } from '../config';
-import { Terrain } from './Terrain';
+import { FORMATIONS, Terrain, type TerrainMaps } from './Terrain';
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -54,10 +55,20 @@ interface SwayMat extends MeshStandardMaterial {
  * fields, coral reefs, kelp stands, god rays, and the descent pit.
  * Owns everything zone-scoped and can fully dispose itself.
  */
+export interface CylinderCollider {
+  x: number;
+  z: number;
+  r: number;
+  top: number;
+}
+
 export class ShallowVeil {
   readonly group = new Group();
   readonly terrain = new Terrain();
+  /** Solid obstacles (spires, landmark boulders) for player + camera collision. */
+  readonly colliders: CylinderCollider[] = [];
   particleCount = 0;
+  private rockTexture: Texture | null = null;
 
   private readonly scene: Scene;
   private time = 0;
@@ -81,7 +92,7 @@ export class ShallowVeil {
     this.scene = scene;
   }
 
-  build(_renderer: WebGLRenderer, particleScale: number): void {
+  build(_renderer: WebGLRenderer, particleScale: number, maps?: TerrainMaps): void {
     this.fog = new FogExp2(FOG.shallowColor, FOG.density);
     this.scene.fog = this.fog;
     // scene.background is tone-mapped like fogged geometry (setClearColor is
@@ -94,12 +105,22 @@ export class ShallowVeil {
     sun.position.set(80, 150, 40);
     this.group.add(sun);
 
-    this.group.add(this.terrain.build());
+    if (maps) {
+      // Separate transform for rocks/spires (clone shares the image data).
+      this.rockTexture = maps.map.clone();
+      this.rockTexture.wrapS = this.rockTexture.wrapT = RepeatWrapping;
+      this.rockTexture.repeat.set(2.5, 2);
+      this.rockTexture.needsUpdate = true;
+      this.disposables.push(this.rockTexture);
+    }
+
+    this.group.add(this.terrain.build(maps));
 
     this.buildSurface();
     this.buildGodRays();
     this.buildParticles(particleScale);
     this.buildRocks();
+    this.buildSpires();
     this.buildSeagrass();
     this.buildCoral();
     this.buildKelp();
@@ -372,7 +393,11 @@ export class ShallowVeil {
 
   private buildRocks(): void {
     const rand = mulberry32(9001);
-    const mat = new MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
+    const mat = new MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 1,
+      map: this.rockTexture ?? undefined,
+    });
     this.disposables.push(mat);
     const tint = new Color();
     const m = new Matrix4();
@@ -417,17 +442,20 @@ export class ShallowVeil {
         idx++;
       }
       if (v === 0) {
-        // Landmark monoliths.
+        // Landmark monoliths (registered as solid obstacles).
         for (let i = 0; i < 6; i++) {
           const { x, z } = this.pickSpot(rand, 55);
           const s = 9 + rand() * 8;
-          scl.set(s, s * (1.1 + rand() * 0.7), s);
+          const sy = s * (1.1 + rand() * 0.7);
+          scl.set(s, sy, s);
           q.setFromAxisAngle(up, rand() * Math.PI * 2);
-          posV.set(x, this.terrain.heightAt(x, z) + s * 0.1, z);
+          const gy = this.terrain.heightAt(x, z);
+          posV.set(x, gy + s * 0.1, z);
           m.compose(posV, q, scl);
           mesh.setMatrixAt(idx, m);
           tint.setHSL(0.5, 0.12, 0.33);
           mesh.setColorAt(idx, tint);
+          this.colliders.push({ x, z, r: s * 0.82, top: gy + sy * 0.75 });
           idx++;
         }
       }
@@ -435,6 +463,71 @@ export class ShallowVeil {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.group.add(mesh);
     }
+  }
+
+  // ---- rock spires (broken-tower clusters around the formations) -------------
+
+  private buildSpires(): void {
+    const rand = mulberry32(2718);
+    const mat = new MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 1,
+      map: this.rockTexture ?? undefined,
+    });
+    this.disposables.push(mat);
+
+    // Tapered, gently-distorted column.
+    const geo = new CylinderGeometry(0.42, 1, 1, 7, 5);
+    const p = geo.attributes.position as BufferAttribute;
+    for (let i = 0; i < p.count; i++) {
+      const y = p.getY(i);
+      const wob = 1 + Math.sin(y * 9.1 + p.getX(i) * 4.7) * 0.12 + Math.sin(y * 4.3) * 0.1;
+      p.setX(i, p.getX(i) * wob);
+      p.setZ(i, p.getZ(i) * wob);
+    }
+    geo.translate(0, 0.5, 0); // pivot at base
+    geo.computeVertexNormals();
+    this.disposables.push(geo);
+
+    // Collect valid placements first so the instance count is exact.
+    const spots: { x: number; z: number; height: number; width: number }[] = [];
+    for (let tries = 0; tries < 90 && spots.length < 34; tries++) {
+      // Cluster around a formation's skirt so towers frame the big shapes.
+      const f = FORMATIONS[Math.floor(rand() * FORMATIONS.length)];
+      const a = rand() * Math.PI * 2;
+      const rr = f.r * (1.15 + rand() * 0.8);
+      const x = f.x + Math.cos(a) * rr;
+      const z = f.z + Math.sin(a) * rr;
+      const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
+      const dDrop = Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z);
+      if (dSpawn < 25 || dDrop < WORLD.dropRadius + 15 || Math.hypot(x, z) > WORLD.playableRadius) {
+        continue;
+      }
+      spots.push({ x, z, height: 7 + rand() * 12, width: 1.6 + rand() * 2.2 });
+    }
+
+    const mesh = new InstancedMesh(geo, mat, spots.length);
+    const m = new Matrix4();
+    const q = new Quaternion();
+    const up = new Vector3(0, 1, 0);
+    const scl = new Vector3();
+    const posV = new Vector3();
+    const tint = new Color();
+
+    spots.forEach((sp, i) => {
+      scl.set(sp.width, sp.height, sp.width);
+      q.setFromAxisAngle(up, rand() * Math.PI * 2);
+      const gy = this.terrain.heightAt(sp.x, sp.z);
+      posV.set(sp.x, gy - 0.5, sp.z);
+      m.compose(posV, q, scl);
+      mesh.setMatrixAt(i, m);
+      tint.setHSL(0.35 + rand() * 0.15, 0.1 + rand() * 0.1, 0.3 + rand() * 0.16);
+      mesh.setColorAt(i, tint);
+      this.colliders.push({ x: sp.x, z: sp.z, r: sp.width * 0.85, top: gy + sp.height * 0.98 });
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    this.group.add(mesh);
   }
 
   // ---- seagrass meadows ----------------------------------------------------------
@@ -446,7 +539,7 @@ export class ShallowVeil {
     const mat = this.makeSwayMaterial(0.3, 0.22, 1.35);
     this.disposables.push(geo);
 
-    const patches = 42;
+    const patches = 52;
     const perPatch = 60;
     const mesh = new InstancedMesh(geo, mat, patches * perPatch);
     const m = new Matrix4();
@@ -457,10 +550,22 @@ export class ShallowVeil {
     const tint = new Color();
     let idx = 0;
 
-    // One guaranteed meadow just ahead of spawn so the first view is dressed.
+    // One guaranteed meadow just ahead of spawn; several skirting formations.
     const centers: { x: number; z: number }[] = [
       { x: WORLD.spawn.x + 14, z: WORLD.spawn.z + 2 },
     ];
+    for (const f of FORMATIONS) {
+      const a = rand() * Math.PI * 2;
+      const rr = f.r * (1.35 + rand() * 0.6);
+      const x = f.x + Math.cos(a) * rr;
+      const z = f.z + Math.sin(a) * rr;
+      if (
+        this.terrain.slopeAt(x, z) < 0.5 &&
+        Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z) > WORLD.dropRadius + 20
+      ) {
+        centers.push({ x, z });
+      }
+    }
     while (centers.length < patches) centers.push(this.pickSpot(rand, 30, 0.5));
 
     for (const c of centers) {
@@ -523,17 +628,49 @@ export class ShallowVeil {
     const moundGeo = new SphereGeometry(0.5, 9, 7);
     moundGeo.scale(1, 0.55, 1);
 
-    const sets: { geo: BufferGeometry; color: number; count: number; hue: number }[] = [
-      { geo: branchGeo, color: 0xc7603c, count: 60, hue: 0.05 },
-      { geo: tubeGeo, color: 0x9a5fb8, count: 55, hue: 0.78 },
-      { geo: moundGeo, color: 0xd88f7a, count: 50, hue: 0.04 },
+    // Fan coral: three flat arcs at slight angles.
+    const fanParts: BufferGeometry[] = [];
+    const fr = mulberry32(77);
+    for (let k = 0; k < 3; k++) {
+      const g = new CircleGeometry(0.45 + fr() * 0.25, 7, Math.PI * 0.08, Math.PI * 0.84);
+      const mm = new Matrix4();
+      const qq = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), fr() * Math.PI);
+      mm.compose(new Vector3((fr() - 0.5) * 0.25, 0.05, (fr() - 0.5) * 0.25), qq, new Vector3(1, 1, 1));
+      g.applyMatrix4(mm);
+      fanParts.push(g);
+    }
+    const fanGeo = mergeGeometries(fanParts);
+    for (const g of fanParts) g.dispose();
+
+    const sets: {
+      geo: BufferGeometry;
+      color: number;
+      count: number;
+      hue: number;
+      hueSpread: number;
+      doubleSided?: boolean;
+    }[] = [
+      { geo: branchGeo, color: 0xc7603c, count: 110, hue: 0.05, hueSpread: 0.1 },
+      { geo: tubeGeo, color: 0x9a5fb8, count: 95, hue: 0.78, hueSpread: 0.12 },
+      { geo: moundGeo, color: 0xd88f7a, count: 90, hue: 0.07, hueSpread: 0.16 },
+      { geo: fanGeo, color: 0xe08aa0, count: 70, hue: 0.93, hueSpread: 0.1, doubleSided: true },
     ];
 
-    // Reef cluster centers; one guaranteed by the spawn meadow.
+    // Reef cluster centers: one at spawn, most hugging formation skirts (the
+    // rich-ecosystem look), the rest scattered on open flats.
     const reefCenters: { x: number; z: number }[] = [
       { x: WORLD.spawn.x + 20, z: WORLD.spawn.z - 6 },
     ];
-    while (reefCenters.length < 14) reefCenters.push(this.pickSpot(rand, 30, 0.55));
+    for (const f of FORMATIONS) {
+      const a = rand() * Math.PI * 2;
+      const rr = f.r * (1.2 + rand() * 0.5);
+      const x = f.x + Math.cos(a) * rr;
+      const z = f.z + Math.sin(a) * rr;
+      if (Math.hypot(x - WORLD.dropCenter.x, z - WORLD.dropCenter.z) > WORLD.dropRadius + 20) {
+        reefCenters.push({ x, z });
+      }
+    }
+    while (reefCenters.length < 28) reefCenters.push(this.pickSpot(rand, 30, 0.55));
 
     const m = new Matrix4();
     const q = new Quaternion();
@@ -543,21 +680,28 @@ export class ShallowVeil {
     const tint = new Color();
 
     for (const set of sets) {
-      const mesh = new InstancedMesh(set.geo, new MeshStandardMaterial({ color: set.color, roughness: 0.8 }), set.count);
-      this.disposables.push(set.geo, mesh.material as MeshStandardMaterial);
+      const mat = new MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.8,
+        side: set.doubleSided ? DoubleSide : undefined,
+      });
+      const mesh = new InstancedMesh(set.geo, mat, set.count);
+      this.disposables.push(set.geo, mat);
+      const base = new Color(set.color);
       for (let i = 0; i < set.count; i++) {
         const c = reefCenters[Math.floor(rand() * reefCenters.length)];
         const a = rand() * Math.PI * 2;
-        const rr = Math.sqrt(rand()) * 7;
+        const rr = Math.sqrt(rand()) * 7.5;
         const x = c.x + Math.cos(a) * rr;
         const z = c.z + Math.sin(a) * rr;
-        const sc = 0.8 + rand() * 1.6;
+        const sc = 0.8 + rand() * 1.7;
         s.set(sc, sc * (0.8 + rand() * 0.5), sc);
         q.setFromAxisAngle(up, rand() * Math.PI * 2);
         p.set(x, this.terrain.heightAt(x, z) + 0.02, z);
         m.compose(p, q, s);
         mesh.setMatrixAt(i, m);
-        tint.setHSL(set.hue + (rand() - 0.5) * 0.06, 0.5 + rand() * 0.25, 0.5 + rand() * 0.2);
+        // Tint carries the colour (white-base material): base hue ± spread.
+        tint.copy(base).offsetHSL((rand() - 0.5) * set.hueSpread, (rand() - 0.5) * 0.15, (rand() - 0.5) * 0.18);
         mesh.setColorAt(i, tint);
       }
       mesh.instanceMatrix.needsUpdate = true;

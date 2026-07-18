@@ -50,10 +50,10 @@ export const DARTFISH: SpeciesDef = {
     verticalFactor: 0.85,
   },
   camera: {
-    distanceFactor: 5.6,
-    minDistance: 2.0,
-    heightFactor: 1.9,
-    baseFov: 60,
+    distanceFactor: 4.2,
+    minDistance: 1.6,
+    heightFactor: 1.5,
+    baseFov: 58,
   },
 };
 

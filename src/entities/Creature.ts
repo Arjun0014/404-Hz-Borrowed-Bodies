@@ -15,6 +15,10 @@ export interface EcoContext {
   time: number;
   playerPos: Vector3;
   playerLength: number;
+  /** False once the host has died — creatures stop hunting/reacting to it. */
+  playerAlive: boolean;
+  /** >0 while the player is being aggressive nearby; prey flee it as a predator. */
+  playerThreatT: number;
   terrain: TerrainLike;
   colliders: CylinderCollider[];
   bounds: ZoneBounds;
@@ -23,7 +27,16 @@ export interface EcoContext {
   creatures: Creature[];
   /** Reused buffer of creature indices within `radius` of (x,z). */
   queryNeighbors(x: number, z: number, radius: number): number[];
+  /** A predator bit the player for `dmg`. */
+  hitPlayer(dmg: number): void;
 }
+
+/** Bite damage a predator deals to the host, by role. */
+const PLAYER_BITE_DAMAGE: Record<string, number> = {
+  grouper: 10,
+  barracuda: 15,
+  shark: 34,
+};
 
 export type CreatureState = 'wander' | 'school' | 'flee' | 'hunt' | 'crab_scuttle' | 'crab_jump';
 
@@ -58,8 +71,22 @@ export class Creature {
   length: number;
   radius: number;
   alive = true;
+  health = 1;
+  maxHealth = 1;
   hunger = Math.random();
   state: CreatureState = 'wander';
+
+  /** This predator is currently going for the player. */
+  private huntPlayer = false;
+  /** Cooldown between lunge strikes, and the active-strike window timer. */
+  private lungeCd = 0;
+  private lungeT = 0;
+  /** Seconds left to show this creature's floating HP bar after being hurt. */
+  hpBarTimer = 0;
+
+  get health01(): number {
+    return this.maxHealth > 0 ? this.health / this.maxHealth : 0;
+  }
 
   private yaw = Math.random() * Math.PI * 2;
   private pitch = 0;
@@ -92,6 +119,8 @@ export class Creature {
   spawn(x: number, y: number, z: number, preferredY: number, lengthMul = 1): void {
     this.length = this.species.baseLength * lengthMul;
     this.radius = this.length * 0.45;
+    this.maxHealth = 8 + this.length * 16; // bigger creatures are tougher
+    this.health = this.maxHealth;
     this.inst.root.scale.setScalar(lengthMul);
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
@@ -103,15 +132,32 @@ export class Creature {
     this.hunger = Math.random() * 0.6;
     this.preferredY = preferredY;
     this.target = null;
+    this.huntPlayer = false;
+    this.lungeCd = 0;
+    this.lungeT = 0;
+    this.hpBarTimer = 0;
     this.onGround = false;
     this.jumpCd = 1 + Math.random() * 4;
     this.inst.root.visible = true;
     this.inst.root.position.copy(this.pos);
   }
 
+  /** Take damage; returns true if this killed the creature. */
+  takeDamage(dmg: number): boolean {
+    if (!this.alive) return false;
+    this.health -= dmg;
+    if (this.health <= 0) {
+      this.die();
+      return true;
+    }
+    this.hpBarTimer = 4; // show a floating HP bar for a few seconds
+    return false;
+  }
+
   die(): void {
     this.alive = false;
     this.target = null;
+    this.huntPlayer = false;
     this.inst.root.visible = false;
     this.respawnTimer = 3 + Math.random() * 5;
   }
@@ -169,13 +215,42 @@ export class Creature {
     _desired.set(0, 0, 0);
     let boost = 1;
     this.target = null;
+    this.huntPlayer = false;
     const fleeR = Math.min(sp.senseRadius, this.length * 10 + 8);
+
+    // Distance to the host — a threat to flee, or (for predators) prey to hunt.
+    _tmp.subVectors(this.pos, ctx.playerPos);
+    const playerDist = _tmp.length();
+    const canEatPlayer =
+      ctx.playerAlive && sp.role === 'predator' && this.length >= ctx.playerLength * EAT_SIZE_RATIO;
+    // The host is a juicy target: hunted when close (<14 m) or nearly as near as
+    // the closest fish prey, so lingering next to a predator gets you bitten even
+    // in a crowd — but you're fast enough to dash away.
+    if (canEatPlayer && wantsPrey && playerDist < sp.senseRadius &&
+        (playerDist < 14 || playerDist < preyDist + 6)) {
+      this.huntPlayer = true;
+      prey = null;
+    }
+    // Prey/foragers flee the host while it is attacking nearby.
+    const playerIsThreat =
+      ctx.playerAlive && ctx.playerThreatT > 0 && (sp.role === 'prey' || sp.role === 'forager');
 
     if (predator && predDist < fleeR) {
       this.state = 'flee';
       _tmp2.subVectors(this.pos, predator.pos).normalize();
       _desired.addScaledVector(_tmp2, 2.4);
       boost = 1.7;
+    } else if (playerIsThreat && playerDist < fleeR) {
+      this.state = 'flee';
+      _tmp2.subVectors(this.pos, ctx.playerPos).normalize();
+      _desired.addScaledVector(_tmp2, 2.4);
+      boost = 1.7;
+    } else if (this.huntPlayer) {
+      this.state = 'hunt';
+      _tmp2.subVectors(ctx.playerPos, this.pos).normalize();
+      _desired.addScaledVector(_tmp2, 2.2);
+      // Slow down when closing so it can turn in and strike instead of orbiting.
+      boost = playerDist < 6 ? 0.6 : sp.apex ? 1.3 : 1.5;
     } else if (prey && preyDist < sp.senseRadius) {
       this.state = 'hunt';
       this.target = prey;
@@ -214,18 +289,21 @@ export class Creature {
     // Hold a preferred depth band.
     _desired.y += clamp((this.preferredY - this.pos.y) * 0.14, -0.6, 0.6);
 
-    // Scatter away from the swimming player (the apex is unbothered).
-    if (!sp.apex) {
+    // Prey/foragers scatter away from the swimming player; predators do not
+    // (they hunt it), and the apex is unbothered by anything.
+    if (sp.role === 'prey' || sp.role === 'forager') {
       _tmp.subVectors(this.pos, ctx.playerPos);
       const pd = _tmp.length();
       const scareR = this.length * 5 + 6;
       if (pd < scareR && pd > 1e-3) {
         _desired.addScaledVector(_tmp, ((scareR - pd) / (pd * scareR)) * 2.0);
-        if (sp.role === 'prey' || sp.role === 'forager') boost = Math.max(boost, 1.4);
+        boost = Math.max(boost, 1.4);
       }
     }
 
-    if (sepN > 0) _desired.addScaledVector(_sep, 1.4);
+    // A committed hunter barrels through the crowd (light separation) so it can
+    // actually reach its target instead of being held off at the crowd's edge.
+    if (sepN > 0) _desired.addScaledVector(_sep, this.huntPlayer ? 0.4 : 1.4);
     this.avoidTerrainAndObstacles(ctx);
     this.steerToHabitat(ctx.habitat);
 
@@ -353,8 +431,45 @@ export class Creature {
 
     this.resolveCollisions(ctx);
     this.tryEat();
+    this.strikePlayer(ctx, dt);
+    if (this.hpBarTimer > 0) this.hpBarTimer -= dt;
     this.orient(dt);
     this.inst.root.position.copy(this.pos);
+  }
+
+  /**
+   * A hunting predator lunges at the host and only lands damage from the FRONT
+   * during the lunge — no more side-touch damage. The strike is telegraphed (a
+   * committed forward burst) so it reads and can be dodged.
+   */
+  private strikePlayer(ctx: EcoContext, dt: number): void {
+    this.lungeCd -= dt;
+    this.lungeT -= dt;
+    if (!this.huntPlayer || !ctx.playerAlive) return;
+
+    _tmp.subVectors(ctx.playerPos, this.pos);
+    const d = _tmp.length();
+    if (d < 1e-3) return;
+    _tmp.multiplyScalar(1 / d); // unit toward player
+    const spd = this.vel.length();
+    const facing = spd > 0.3 ? (this.vel.x * _tmp.x + this.vel.y * _tmp.y + this.vel.z * _tmp.z) / spd : 1;
+
+    // Begin a lunge when in range and roughly facing the host.
+    const lungeRange = this.radius + ctx.playerLength + 4.5;
+    if (this.lungeCd <= 0 && d < lungeRange && facing > 0.35) {
+      this.vel.addScaledVector(_tmp, this.species.maxSpeed * 1.7);
+      this.lungeT = 0.45;
+      this.lungeCd = 1.8 + Math.random() * 0.8;
+    }
+
+    // Damage only connects during the lunge, front-on, on contact.
+    const reach = this.radius + ctx.playerLength * 0.5 + 1.3;
+    if (this.lungeT > 0 && d < reach && facing > 0.25) {
+      ctx.hitPlayer(PLAYER_BITE_DAMAGE[this.species.id] ?? 8);
+      this.lungeT = 0;
+      this.lungeCd = Math.max(this.lungeCd, 1.4);
+      this.hunger = Math.max(0, this.hunger - 0.5);
+    }
   }
 
   private crabMove(ctx: EcoContext, dt: number): void {
@@ -398,6 +513,8 @@ export class Creature {
         this.target = null;
       }
     }
+
+    if (this.hpBarTimer > 0) this.hpBarTimer -= dt;
 
     // Upright: yaw toward horizontal motion, subtle waddle.
     const hspd = Math.hypot(this.vel.x, this.vel.z);

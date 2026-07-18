@@ -24,6 +24,9 @@ import { UnderwaterFx } from '../render/UnderwaterFx';
 import { DARTFISH } from '../data/species';
 import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
+import { PlayerCombat } from '../player/PlayerCombat';
+import { Sfx, AMBIENT } from './Sfx';
+import { DamageBars } from '../ui/DamageBars';
 import { SHALLOW_VEIL_POP } from '../data/creatures';
 import type { Zone } from '../world/types';
 
@@ -53,6 +56,11 @@ export class GameApp {
   private fx!: UnderwaterFx;
   private ecosystem!: Ecosystem;
   private flora!: Flora;
+  private combat!: PlayerCombat;
+  private readonly sfx = new Sfx();
+  private readonly damageBars = new DamageBars();
+  /** Seconds of post-spawn peace before predators may hunt the host. */
+  private spawnGrace = 0;
 
   private started = false;
   private transitioning = false;
@@ -176,6 +184,19 @@ export class GameApp {
     await this.ecosystem.load();
     this.bindEcosystem(zone);
 
+    // Survival loop: host health, biting/feeding, damage from predators, death.
+    this.combat = new PlayerCombat(
+      this.controller,
+      this.fish,
+      this.ecosystem,
+      this.input,
+      this.sfx,
+      this.playerCamera,
+    );
+    this.ecosystem.onHitPlayer = (dmg) => this.combat.takeDamage(dmg);
+    this.combat.onDeath = () => this.onHostDeath();
+    this.combat.onHit = () => this.triggerShake();
+
     this.updateZoneTag();
 
     loadingEl.classList.add('hidden');
@@ -192,6 +213,10 @@ export class GameApp {
 
     const beginPlay = () => {
       titleEl.classList.add('hidden');
+      document.getElementById('health-hud')!.classList.remove('hidden');
+      void this.sfx.load();
+      this.updateZoneAmbient();
+      this.spawnGrace = 3.5; // a calm moment before predators lock on
       this.input.requestLock();
     };
     titleEl.addEventListener('click', beginPlay);
@@ -200,17 +225,24 @@ export class GameApp {
         RunState.clear();
         location.reload();
       }
+      // Restart after the host dies.
+      if (e.code === 'KeyR' && this.combat?.dead) {
+        RunState.clear();
+        location.reload();
+      }
     });
 
     const resumeChip = document.getElementById('resume-chip')!;
     this.renderer.domElement.addEventListener('click', () => {
-      if (this.started && !this.input.pointerLocked && !this.transitioning) this.input.requestLock();
+      if (this.started && !this.input.pointerLocked && !this.transitioning && !this.combat?.dead) {
+        this.input.requestLock();
+      }
     });
     this.input.onPointerLockChange = (locked) => {
       if (locked) {
         this.started = true;
         resumeChip.classList.add('hidden');
-      } else if (this.started && !this.transitioning) {
+      } else if (this.started && !this.transitioning && !this.combat?.dead) {
         resumeChip.classList.remove('hidden');
       }
     };
@@ -227,7 +259,8 @@ export class GameApp {
     this.runState.tick(dt);
     const zone = this.zones.current;
 
-    if (!this.transitioning && this.started) {
+    const dead = this.combat?.dead ?? false;
+    if (!this.transitioning && this.started && !dead) {
       this.controller.update(dt);
       if (this.repelling) {
         const done = this.zones.current.repelFromDescent(this.controller.pos, this.controller.vel, dt);
@@ -240,12 +273,26 @@ export class GameApp {
       }
     }
 
-    const speed = this.transitioning ? 0 : this.controller.speed01;
+    if (this.spawnGrace > 0) this.spawnGrace -= dt;
+    // Predators may only hunt/bite the host once it is in control and past the
+    // post-spawn grace — no ambushes on the loading screen or the instant you dive.
+    const combatActive = this.started && !dead && !this.transitioning && this.spawnGrace <= 0;
+
+    const speed = this.transitioning || dead ? 0 : this.controller.speed01;
     this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
     zone.update(dt, this.playerCamera.camera, this.renderer);
     this.flora.update(dt);
+    this.sfx.setSwim(dead ? 0 : this.controller.speed01, this.controller.dashOutput > 0.25);
     if (!this.transitioning) {
-      this.ecosystem.update(dt, this.controller.pos, this.fish.length);
+      this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
+      if (this.started) this.combat.update(dt);
+      this.updateCombatHud();
+      this.damageBars.update(
+        this.playerCamera.camera,
+        this.ecosystem.list,
+        window.innerWidth,
+        window.innerHeight,
+      );
     }
 
     if (!this.transitioning) {
@@ -269,6 +316,49 @@ export class GameApp {
       zone.particleCount,
       this.ecosystem?.count ?? 0,
     );
+  }
+
+  // ---- combat HUD + death --------------------------------------------------
+
+  private healthFillEl: HTMLElement | null = null;
+  private vignetteEl: HTMLElement | null = null;
+
+  private updateCombatHud(): void {
+    if (!this.combat || !this.started) return;
+    this.healthFillEl ||= document.getElementById('health-fill');
+    this.vignetteEl ||= document.getElementById('damage-vignette');
+    if (this.healthFillEl) {
+      this.healthFillEl.style.width = `${Math.max(0, this.combat.health01 * 100)}%`;
+      this.healthFillEl.classList.toggle('fed', this.combat.feedFlash > 0.01);
+      this.healthFillEl.classList.toggle(
+        'low',
+        this.combat.health01 < 0.3 && this.combat.feedFlash <= 0.01,
+      );
+    }
+    if (this.vignetteEl) {
+      this.vignetteEl.style.opacity = String(Math.min(0.9, this.combat.hurtFlash * 0.9));
+    }
+  }
+
+  private triggerShake(): void {
+    const app = document.getElementById('app');
+    if (!app) return;
+    app.classList.remove('hit');
+    void app.offsetWidth; // reflow so the animation restarts on each hit
+    app.classList.add('hit');
+  }
+
+  /** Loop the current zone's background ambience (Shallow Veil vs deeper). */
+  private updateZoneAmbient(): void {
+    const depth = this.runState.data.depth;
+    void this.sfx.playAmbient(depth === 0 ? AMBIENT.shallowVeil : AMBIENT.drownedGarden);
+  }
+
+  private onHostDeath(): void {
+    document.exitPointerLock?.();
+    this.damageBars.hideAll();
+    document.getElementById('death-screen')!.classList.remove('hidden');
+    document.getElementById('resume-chip')!.classList.add('hidden');
   }
 
   /** Scatter the seabed forest for a zone (none when the zone has no area). */
@@ -352,6 +442,8 @@ export class GameApp {
     this.playerCamera.bindZone(next.terrain, next.colliders);
     this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
     this.bindEcosystem(next);
+    this.updateZoneAmbient();
+    this.spawnGrace = 3.0; // brief peace after arriving in the new zone
     this.updateZoneTag();
 
     // Draw one (still-dark) frame of the new zone so it is ready to reveal.

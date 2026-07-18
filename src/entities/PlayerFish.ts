@@ -29,6 +29,7 @@ export class PlayerFish {
   private swimAction: AnimationAction | null = null;
   private bank = 0;
   private swayT = 0;
+  private lungeT = 0;
 
   private constructor(species: SpeciesDef, gltf: GLTF) {
     this.species = species;
@@ -93,6 +94,11 @@ export class PlayerFish {
     this.modelRoot.rotation.z = this.bank;
   }
 
+  /** Squash-stretch pop on a lunge/bite for a punchy, tactile strike. */
+  lungePulse(): void {
+    this.lungeT = 0.3;
+  }
+
   /** World position just behind the tail (for dash bubble emission). */
   getTailPosition(out: Vector3): Vector3 {
     // -Z is the tail in local space (forward is +Z after alignment).
@@ -107,6 +113,15 @@ export class PlayerFish {
       // Procedural fallback: gentle body sway scaled by speed.
       this.swayT += dt * (2.5 + speed01 * 9);
       this.modelRoot.rotation.y = Math.sin(this.swayT) * (0.05 + speed01 * 0.1);
+    }
+
+    // Lunge squash-stretch: stretch forward (+Z), pinch sideways, then settle.
+    if (this.lungeT > 0) {
+      this.lungeT -= dt;
+      const e = Math.sin(Math.max(0, this.lungeT / 0.3) * Math.PI); // 0→1→0
+      this.modelRoot.scale.set(1 - e * 0.26, 1 - e * 0.26, 1 + e * 0.55);
+    } else {
+      this.modelRoot.scale.set(1, 1, 1);
     }
   }
 }

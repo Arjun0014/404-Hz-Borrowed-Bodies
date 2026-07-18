@@ -9,6 +9,8 @@ export class Input {
   onPointerLockChange: (locked: boolean) => void = () => {};
 
   private keys = new Set<string>();
+  /** Left-click attack edge, latched until consumed once per frame. */
+  private attackLatched = false;
   private readonly el: HTMLElement;
 
   constructor(el: HTMLElement) {
@@ -36,6 +38,19 @@ export class Input {
     window.addEventListener('wheel', (e) => {
       if (this.pointerLocked) this.wheelDelta += e.deltaY;
     });
+
+    // Left-click = attack (only while locked, so the click that grabs pointer
+    // lock or dismisses a menu never fires a bite).
+    window.addEventListener('mousedown', (e) => {
+      if (this.pointerLocked && e.button === 0) this.attackLatched = true;
+    });
+  }
+
+  /** True once per left-click; consumes the latch. */
+  consumeAttack(): boolean {
+    const a = this.attackLatched;
+    this.attackLatched = false;
+    return a;
   }
 
   requestLock(): void {

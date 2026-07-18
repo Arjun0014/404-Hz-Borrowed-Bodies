@@ -27,6 +27,8 @@ export class SwimController {
   private curYaw = Math.PI / 2; // spawn facing +X (toward the drop-off)
   private curPitch = 0;
   private yawRate = 0;
+  /** While >0, a lunge is carrying the fish faster than its normal max speed. */
+  private lungeBoostT = 0;
 
   // Zone-scoped references, swapped on descent via bindZone().
   private terrain: TerrainLike;
@@ -60,6 +62,23 @@ export class SwimController {
     this.fish.object.position.copy(this.pos);
     LOOK_E.set(0, this.curYaw, 0);
     this.fish.object.quaternion.setFromEuler(LOOK_E);
+  }
+
+  /** Unit forward vector the fish is facing (from yaw/pitch). */
+  getForward(out: Vector3): Vector3 {
+    const cp = Math.cos(this.curPitch);
+    return out.set(Math.sin(this.curYaw) * cp, -Math.sin(this.curPitch), Math.cos(this.curYaw) * cp);
+  }
+
+  /**
+   * Add a forward burst of velocity (a bite/attack lunge) and open a short window
+   * in which the normal max-speed clamp is lifted, so the burst actually carries
+   * the fish a real distance instead of being capped away next frame.
+   */
+  lunge(speed: number): void {
+    this.getForward(TMP);
+    this.vel.addScaledVector(TMP, speed);
+    this.lungeBoostT = 0.45;
   }
 
   /** Rebind to a new zone after descent and reposition at its spawn. */
@@ -98,10 +117,15 @@ export class SwimController {
     }
 
     // --- water drag & speed clamp -------------------------------------------
-    const drag = inputActive ? mv.drag : mv.drag * 1.45;
+    // During a lunge, drag is lighter and the max-speed cap is lifted so the
+    // burst glides; drag then eases the fish back to normal speed on its own.
+    this.lungeBoostT = Math.max(0, this.lungeBoostT - dt);
+    const boosting = this.lungeBoostT > 0;
+    const drag = boosting ? mv.drag * 0.35 : inputActive ? mv.drag : mv.drag * 1.45;
     this.vel.multiplyScalar(Math.exp(-drag * dt));
     const speed = this.vel.length();
-    if (speed > maxSpeed) this.vel.multiplyScalar(maxSpeed / speed);
+    const cap = boosting ? Math.max(maxSpeed, speed) : maxSpeed;
+    if (speed > cap) this.vel.multiplyScalar(cap / speed);
 
     this.pos.addScaledVector(this.vel, dt);
 

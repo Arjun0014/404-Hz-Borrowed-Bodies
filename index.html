@@ -24,6 +24,19 @@
     <div id="hint" class="hidden"></div>
     <div id="zone-tag"></div>
 
+    <!-- Combat HUD -->
+    <div id="damage-bars"></div>
+    <div id="damage-vignette"></div>
+    <div id="health-hud" class="hidden">
+      <div id="health-label">HOST HEALTH</div>
+      <div id="health-bar"><div id="health-fill"></div></div>
+    </div>
+    <div id="death-screen" class="overlay hidden">
+      <div class="death-title">YOUR HOST HAS DIED</div>
+      <div class="death-sub">the signal claims another body</div>
+      <p class="death-prompt">press <b>R</b> to begin a new run</p>
+    </div>
+
     <div id="descend-prompt" class="hidden">
       <div class="dp-card">
         <div class="dp-title">DESCEND TO <span class="dp-target">THE DEEP</span>?</div>
@@ -38,7 +51,7 @@
     </div>
 
     <div id="controls-help">
-      <b>W</b> swim &nbsp; <b>mouse</b> steer &nbsp; <b>shift</b> dash &nbsp;
+      <b>W</b> swim &nbsp; <b>mouse</b> steer &nbsp; <b>click</b> bite &nbsp; <b>shift</b> dash &nbsp;
       <b>space/C</b> rise/sink &nbsp; <b>F3</b> stats &nbsp; <b>F4</b> quality
     </div>
 

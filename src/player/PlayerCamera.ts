@@ -24,6 +24,7 @@ export class PlayerCamera {
   private zoomFactor = 1;
   private currentDist: number;
   private currentFov: number;
+  private kickFov = 0;
   private readonly lookTarget = new Vector3();
   private readonly smoothPos = new Vector3();
   private initialized = false;
@@ -69,6 +70,11 @@ export class PlayerCamera {
   /** Direction the player is aiming (camera forward), used for steering. */
   getAimDir(out: Vector3): Vector3 {
     return this.camera.getWorldDirection(out);
+  }
+
+  /** A transient FOV punch (a lunge/impact kick). Decays fast. */
+  punch(fov: number): void {
+    this.kickFov = Math.max(this.kickFov, fov);
   }
 
   get yawAngle(): number {
@@ -143,10 +149,11 @@ export class PlayerCamera {
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(this.lookTarget);
 
-    // Gentle speed-reactive FOV (kept subtle: FOV pumping feels weird).
-    const targetFov = this.profile.baseFov + speed01 * 4;
-    if (Math.abs(targetFov - this.currentFov) > 0.05) {
-      this.currentFov += (targetFov - this.currentFov) * Math.min(1, 6 * dt);
+    // Speed-reactive FOV plus a fast-decaying lunge kick for punchy strikes.
+    this.kickFov = Math.max(0, this.kickFov - dt * 60);
+    const targetFov = this.profile.baseFov + speed01 * 4 + this.kickFov;
+    if (Math.abs(targetFov - this.currentFov) > 0.03) {
+      this.currentFov += (targetFov - this.currentFov) * Math.min(1, 12 * dt);
       this.camera.fov = this.currentFov;
       this.camera.updateProjectionMatrix();
     }

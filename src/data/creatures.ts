@@ -62,6 +62,13 @@ export const HUNT_THRESHOLD = 0.25;
 export const FORAGER_HUNT_THRESHOLD = 0.5;
 
 export const SPECIES: CreatureSpecies[] = [
+  // ---- fry: tiny bait fish, the only thing the 0.5 m starter can eat ----
+  {
+    id: 'fry', modelUrl: fishSchool1Url, baseLength: 0.3, sizeVar: 0.18, flipForward: false,
+    modelYaw: 0.87, // same model as silverside
+    role: 'prey', maxSpeed: 4.6, accel: 20, drag: 2.2, turnRate: 4.6,
+    senseRadius: 11, schooling: true, hungerRate: 0, animSpeed: 1.6, procedural: false,
+  },
   // ---- schooling prey (min ~2× the 0.5 m clownfish) ----
   {
     id: 'silverside', modelUrl: fishSchool1Url, baseLength: 1.3, sizeVar: 0.22, flipForward: false,
@@ -113,11 +120,11 @@ export const SPECIES: CreatureSpecies[] = [
     senseRadius: 46, schooling: false, hungerRate: 0.06, animSpeed: 0.95, procedural: false,
   },
 
-  // ---- crab (seabed ambusher) ----
+  // ---- crab (seabed ambusher) — big enough to read clearly on the seabed ----
   {
-    id: 'crab', modelUrl: crabUrl, baseLength: 1.35, sizeVar: 0.25, flipForward: false,
-    role: 'crab', maxSpeed: 3.0, accel: 12, drag: 3.0, turnRate: 2.2,
-    senseRadius: 11, schooling: false, hungerRate: 0.04, animSpeed: 1.0, procedural: true,
+    id: 'crab', modelUrl: crabUrl, baseLength: 2.7, sizeVar: 0.28, flipForward: false,
+    role: 'crab', maxSpeed: 3.2, accel: 13, drag: 3.0, turnRate: 2.2,
+    senseRadius: 12, schooling: false, hungerRate: 0.04, animSpeed: 1.0, procedural: true,
   },
 ];
 
@@ -143,8 +150,9 @@ export interface PopEntry {
 export const SHALLOW_VEIL_POP: PopEntry[] = [
   // Lean on the cheap schooling species (silverside 534 tris, anchovy 806) for a
   // high *visible* count; keep the heavy sardine (6.5k tris) to a single shoal.
-  { speciesId: 'silverside', count: 64, schoolSize: 16 },
-  { speciesId: 'anchovy', count: 52, schoolSize: 13 },
+  { speciesId: 'fry', count: 44, schoolSize: 22 }, // bait balls for the starter to eat
+  { speciesId: 'silverside', count: 48, schoolSize: 16 },
+  { speciesId: 'anchovy', count: 44, schoolSize: 13 },
   { speciesId: 'sardine', count: 12, schoolSize: 12 },
   { speciesId: 'wrasse', count: 12 },
   { speciesId: 'angel', count: 10 },

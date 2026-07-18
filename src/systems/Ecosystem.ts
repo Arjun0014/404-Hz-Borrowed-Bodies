@@ -29,6 +29,9 @@ const FAR = 155; // beyond this we stop rendering + animating (still drifts home
 // player, so they fade in and swim toward you rather than popping in close.
 const RING_MIN = 55;
 const RING_MAX = 115;
+// No creature spawns inside this radius of the player at zone load, so you get a
+// calm moment as the world swims in rather than materializing on top of you.
+const SPAWN_CLEAR = 34;
 
 /** A coherent shoal: a roaming centre its members steer toward as one body. */
 interface School {
@@ -55,12 +58,16 @@ export class Ecosystem {
 
   /** Debug: freeze all AI (used to calibrate model orientation). */
   paused = false;
+  /** Called when a predator bites the host. Set by GameApp/PlayerCombat. */
+  onHitPlayer: (dmg: number) => void = () => {};
+  private playerThreatT = 0;
   private terrain: TerrainLike | null = null;
   private colliders: CylinderCollider[] = [];
   private bounds: ZoneBounds | null = null;
   private area: PopulationArea | null = null;
 
   private readonly _playerPos = new Vector3();
+  private readonly _biteVec = new Vector3();
   private readonly _nbr: number[] = [];
   private readonly ctx: EcoContext;
 
@@ -72,12 +79,15 @@ export class Ecosystem {
       time: 0,
       playerPos: this._playerPos,
       playerLength: 0.5,
+      playerAlive: true,
+      playerThreatT: 0,
       terrain: null as unknown as TerrainLike,
       colliders: this.colliders,
       bounds: null as unknown as ZoneBounds,
       habitat: null as unknown as PopulationArea,
       creatures: this.creatures,
       queryNeighbors: (x, z, r) => this.queryNeighbors(x, z, r),
+      hitPlayer: (dmg) => this.onHitPlayer(dmg),
     };
   }
 
@@ -127,7 +137,7 @@ export class Ecosystem {
         let made = 0;
         while (made < entry.count) {
           const n = Math.min(entry.schoolSize, entry.count - made);
-          const school = this.newSchool(sp, 20, RING_MAX);
+          const school = this.newSchool(sp, SPAWN_CLEAR, RING_MAX);
           for (let i = 0; i < n; i++) {
             const x = school.ref.center.x + (Math.random() - 0.5) * 10;
             const z = school.ref.center.z + (Math.random() - 0.5) * 10;
@@ -138,7 +148,7 @@ export class Ecosystem {
         }
       } else {
         for (let i = 0; i < entry.count; i++) {
-          const s = this.ringSpot(20, RING_MAX);
+          const s = this.ringSpot(SPAWN_CLEAR, RING_MAX);
           const py = this.preferredYFor(sp, s.x, s.z);
           this.spawnAt(sp, s.x, s.z, py, phase++);
         }
@@ -230,11 +240,14 @@ export class Ecosystem {
 
   // ---- per-frame update ----------------------------------------------------
 
-  update(dt: number, playerPos: Vector3, playerLength: number): void {
+  update(dt: number, playerPos: Vector3, playerLength: number, playerAlive = true): void {
     if (this.paused || this.creatures.length === 0 || !this.terrain) return;
     this.frame++;
     this._playerPos.copy(playerPos);
     this.ctx.playerLength = playerLength;
+    this.ctx.playerAlive = playerAlive;
+    this.playerThreatT = Math.max(0, this.playerThreatT - dt);
+    this.ctx.playerThreatT = this.playerThreatT;
     this.ctx.time += dt;
 
     // Roam the shoals (staggered — a couple per frame is plenty).
@@ -316,6 +329,57 @@ export class Ecosystem {
     const gy = this.terrain!.heightAt(s.ref.center.x, s.ref.center.z);
     const targetY = this.clampY(gy + s.depthOffset);
     s.ref.center.y += (targetY - s.ref.center.y) * Math.min(1, 2 * dt);
+  }
+
+  /** Read-only view of the population (for HP-bar rendering). */
+  get list(): readonly Creature[] {
+    return this.creatures;
+  }
+
+  /**
+   * The host's lunge bite: damage every creature within `reach` of `origin` that
+   * lies within the FRONT cone (dot(forward, toTarget) >= minDot). Small prey are
+   * eaten (instant, for healing); anything bigger takes `damage` and can be killed
+   * over repeated strikes. `alreadyHit` dedupes across the frames of one lunge so
+   * each creature is hit at most once per strike. Call after update() (uses the
+   * neighbour grid). Returns counts of hit / eaten / killed.
+   */
+  playerBiteCone(
+    origin: Vector3,
+    forward: Vector3,
+    reach: number,
+    minDot: number,
+    eatMaxLen: number,
+    damage: number,
+    alreadyHit: Set<Creature>,
+  ): { hit: number; eaten: number; killed: number } {
+    let hit = 0;
+    let eaten = 0;
+    let killed = 0;
+    if (!this.terrain) return { hit, eaten, killed };
+    const ids = this.queryNeighbors(origin.x, origin.z, reach + 3);
+    for (let i = 0; i < ids.length; i++) {
+      const c = this.creatures[ids[i]];
+      if (!c.alive || alreadyHit.has(c)) continue;
+      this._biteVec.subVectors(c.pos, origin);
+      const d = this._biteVec.length();
+      if (d > reach + c.radius) continue;
+      const dot =
+        d > 1e-3
+          ? (forward.x * this._biteVec.x + forward.y * this._biteVec.y + forward.z * this._biteVec.z) / d
+          : 1;
+      if (dot < minDot) continue; // behind / to the side — no bite
+      alreadyHit.add(c);
+      hit++;
+      const edible = c.species.role !== 'crab' && c.length <= eatMaxLen;
+      if (edible) {
+        if (c.takeDamage(9999)) eaten++;
+      } else if (c.takeDamage(damage)) {
+        killed++;
+      }
+    }
+    if (hit > 0) this.playerThreatT = 2.5; // nearby prey flee the aggressor
+    return { hit, eaten, killed };
   }
 
   private queryNeighbors(x: number, z: number, r: number): number[] {

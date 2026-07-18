@@ -205,7 +205,7 @@ export class SwimController {
     const faceDir = speedNow > 0.4 ? TMP.copy(this.vel).normalize() : TMP.copy(AIM);
     const targetYaw = Math.atan2(faceDir.x, faceDir.z);
     const targetPitch = -Math.asin(Math.min(1, Math.max(-1, faceDir.y)));
-    const maxStep = mv.turnRate * dt;
+    const maxStep = mv.turnRate * this.fish.agility * dt;
     let dYaw = targetYaw - this.curYaw;
     if (dYaw > Math.PI) dYaw -= Math.PI * 2;
     if (dYaw < -Math.PI) dYaw += Math.PI * 2;

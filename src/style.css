@@ -140,9 +140,41 @@ html, body {
 
 /* Combat HUD */
 #health-hud {
-  position: fixed; bottom: 46px; left: 50%; transform: translateX(-50%);
+  position: fixed; bottom: 42px; left: 50%; transform: translateX(-50%);
   width: 300px; z-index: 8; text-align: center;
 }
+#growth-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 4px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
+#growth-stage { color: #ffd479; font-weight: 700; }
+#growth-stage.maxed { color: #7deede; }
+#growth-len { color: #9fe8dc; opacity: 0.7; }
+#growth-bar {
+  height: 6px; border-radius: 4px; margin-bottom: 12px;
+  background: rgba(4, 18, 26, 0.7);
+  border: 1px solid rgba(255, 212, 121, 0.3);
+  overflow: hidden; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+}
+#growth-fill {
+  width: 0%; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #d9932f, #ffd479);
+  transition: width 0.3s ease, background 0.3s;
+}
+#growth-fill.maxed { background: linear-gradient(90deg, #3fd0a8, #7deede); }
+
+#stage-toast {
+  position: fixed; top: 22%; left: 50%; transform: translateX(-50%);
+  padding: 8px 22px; border-radius: 4px;
+  background: rgba(4, 18, 26, 0.82);
+  border: 1px solid rgba(255, 212, 121, 0.5);
+  font-size: 16px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: #ffd479; z-index: 9;
+  text-shadow: 0 0 16px rgba(255, 212, 121, 0.4);
+  animation: stage-pop 0.3s ease-out;
+}
+@keyframes stage-pop { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 #health-label {
   font-size: 10px; letter-spacing: 0.28em; text-transform: uppercase;
   color: #9fe8dc; opacity: 0.7; margin-bottom: 5px;

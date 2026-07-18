@@ -33,6 +33,12 @@ const RING_MAX = 115;
 // calm moment as the world swims in rather than materializing on top of you.
 const SPAWN_CLEAR = 34;
 
+// Growth biomass economy. Each bite tears a chunk worth BITE_CHUNK × the fish's
+// body length; finishing (killing/eating) it whole adds FINISH_BONUS × length.
+// So big fish are worth far more per chunk and much more whole — but riskier.
+const BITE_CHUNK = 0.4;
+const FINISH_BONUS = 1.0;
+
 /** A coherent shoal: a roaming centre its members steer toward as one body. */
 interface School {
   species: CreatureSpecies;
@@ -352,11 +358,12 @@ export class Ecosystem {
     eatMaxLen: number,
     damage: number,
     alreadyHit: Set<Creature>,
-  ): { hit: number; eaten: number; killed: number } {
+  ): { hit: number; eaten: number; killed: number; biomass: number } {
     let hit = 0;
     let eaten = 0;
     let killed = 0;
-    if (!this.terrain) return { hit, eaten, killed };
+    let biomass = 0; // total body length consumed, for growth
+    if (!this.terrain) return { hit, eaten, killed, biomass };
     const ids = this.queryNeighbors(origin.x, origin.z, reach + 3);
     for (let i = 0; i < ids.length; i++) {
       const c = this.creatures[ids[i]];
@@ -372,14 +379,16 @@ export class Ecosystem {
       alreadyHit.add(c);
       hit++;
       const edible = c.species.role !== 'crab' && c.length <= eatMaxLen;
-      if (edible) {
-        if (c.takeDamage(9999)) eaten++;
-      } else if (c.takeDamage(damage)) {
-        killed++;
-      }
+      const died = edible ? c.takeDamage(9999) : c.takeDamage(damage);
+      if (edible && died) eaten++;
+      else if (died) killed++;
+      // Biomass is a CHUNK proportional to the fish's size (a chunk of a big
+      // fish is worth more), plus a bonus for finishing/eating it whole.
+      biomass += c.length * BITE_CHUNK;
+      if (died) biomass += c.length * FINISH_BONUS;
     }
     if (hit > 0) this.playerThreatT = 2.5; // nearby prey flee the aggressor
-    return { hit, eaten, killed };
+    return { hit, eaten, killed, biomass };
   }
 
   private queryNeighbors(x: number, z: number, r: number): number[] {

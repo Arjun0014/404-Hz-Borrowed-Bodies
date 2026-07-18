@@ -38,6 +38,10 @@ export class PlayerCombat {
 
   onDeath: () => void = () => {};
   onHit: () => void = () => {}; // took damage (screen shake)
+  onFeed: (biomass: number) => void = () => {}; // ate/killed → grow
+
+  /** Bite damage multiplier from growth (1 at base size). */
+  biteScale = 1;
 
   private attackCd = 0;
   private attackActive = 0;
@@ -56,8 +60,7 @@ export class PlayerCombat {
   ) {}
 
   reset(): void {
-    this.maxHealth = 100;
-    this.health = this.maxHealth;
+    this.biteScale = 1;
     this.dead = false;
     this.attackCd = 0;
     this.attackActive = 0;
@@ -105,14 +108,16 @@ export class PlayerCombat {
   private resolveBite(): void {
     this.controller.getForward(FWD);
     ORIGIN.copy(this.controller.pos).addScaledVector(FWD, this.fish.length * 0.6);
+    // Reach and edible-prey size grow with the host; damage scales with growth.
     const eatMax = this.fish.length / EAT_SIZE_RATIO;
+    const reach = Math.max(BITE_REACH, 3 + this.fish.length * 2.4);
     const res = this.ecosystem.playerBiteCone(
       ORIGIN,
       FWD,
-      BITE_REACH,
+      reach,
       CONE_DOT,
       eatMax,
-      BITE_DAMAGE,
+      BITE_DAMAGE * this.biteScale,
       this.lungeHits,
     );
     if (res.hit > 0) {
@@ -131,6 +136,7 @@ export class PlayerCombat {
       this.health = Math.min(this.maxHealth, this.health + 6 * res.killed);
       this.feedFlash = 1;
     }
+    if (res.biomass > 0) this.onFeed(res.biomass); // eating grows the host
   }
 
   takeDamage(dmg: number): void {

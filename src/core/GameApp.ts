@@ -25,6 +25,7 @@ import { DARTFISH } from '../data/species';
 import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
 import { PlayerCombat } from '../player/PlayerCombat';
+import { PlayerGrowth } from '../player/PlayerGrowth';
 import { Sfx, AMBIENT } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
 import { SHALLOW_VEIL_POP } from '../data/creatures';
@@ -57,6 +58,7 @@ export class GameApp {
   private ecosystem!: Ecosystem;
   private flora!: Flora;
   private combat!: PlayerCombat;
+  private growth!: PlayerGrowth;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
@@ -197,6 +199,11 @@ export class GameApp {
     this.combat.onDeath = () => this.onHostDeath();
     this.combat.onHit = () => this.triggerShake();
 
+    // Growth: eating biomass grows the host toward its species ceiling.
+    this.growth = new PlayerGrowth(this.fish, this.playerCamera, this.combat);
+    this.combat.onFeed = (biomass) => this.growth.feed(biomass);
+    this.growth.onStageUp = (name) => this.showStageToast(name);
+
     this.updateZoneTag();
 
     loadingEl.classList.add('hidden');
@@ -287,6 +294,7 @@ export class GameApp {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
       if (this.started) this.combat.update(dt);
       this.updateCombatHud();
+      this.updateGrowthHud();
       this.damageBars.update(
         this.playerCamera.camera,
         this.ecosystem.list,
@@ -346,6 +354,43 @@ export class GameApp {
     app.classList.remove('hit');
     void app.offsetWidth; // reflow so the animation restarts on each hit
     app.classList.add('hit');
+  }
+
+  // ---- growth HUD ----------------------------------------------------------
+
+  private growthFillEl: HTMLElement | null = null;
+  private growthStageEl: HTMLElement | null = null;
+  private growthLenEl: HTMLElement | null = null;
+  private stageToastUntil = 0;
+
+  private updateGrowthHud(): void {
+    if (!this.growth || !this.started) return;
+    this.growthFillEl ||= document.getElementById('growth-fill');
+    this.growthStageEl ||= document.getElementById('growth-stage');
+    this.growthLenEl ||= document.getElementById('growth-len');
+    const maxed = this.growth.atCeiling;
+    if (this.growthFillEl) {
+      this.growthFillEl.style.width = `${this.growth.growth01 * 100}%`;
+      this.growthFillEl.classList.toggle('maxed', maxed);
+    }
+    if (this.growthStageEl) {
+      this.growthStageEl.textContent = maxed ? `${this.growth.stageName} · MAX` : this.growth.stageName;
+      this.growthStageEl.classList.toggle('maxed', maxed);
+    }
+    if (this.growthLenEl) this.growthLenEl.textContent = `${this.fish.length.toFixed(1)} m`;
+
+    if (this.stageToastUntil > 0 && performance.now() > this.stageToastUntil) {
+      this.stageToastUntil = 0;
+      document.getElementById('stage-toast')!.classList.add('hidden');
+    }
+  }
+
+  private showStageToast(name: string): void {
+    const el = document.getElementById('stage-toast')!;
+    el.textContent = this.growth.atCeiling ? `MAX GROWTH · ${name}` : `Grew · ${name}`;
+    el.classList.remove('hidden');
+    void el.offsetWidth; // restart the pop animation
+    this.stageToastUntil = performance.now() + 2400;
   }
 
   /** Loop the current zone's background ambience (Shallow Veil vs deeper). */

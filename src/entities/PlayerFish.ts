@@ -22,8 +22,12 @@ export class PlayerFish {
   readonly object = new Group();
   readonly modelRoot = new Group();
   readonly species: SpeciesDef;
-  /** Body length in meters after normalization. */
-  readonly length: number;
+  /** Body length at minimum (un-grown) size. */
+  readonly baseLength: number;
+  /** Current body length in meters (baseLength × growth). */
+  length: number;
+  /** Turn agility multiplier (1 at min size, lower as the host grows). */
+  agility = 1;
 
   private mixer: AnimationMixer | null = null;
   private swimAction: AnimationAction | null = null;
@@ -72,6 +76,7 @@ export class PlayerFish {
     const center = aligned.getCenter(new Vector3()).multiplyScalar(scale);
     wrapper.position.sub(center);
     this.modelRoot.add(wrapper);
+    this.baseLength = species.baseLength;
     this.length = species.baseLength;
 
     if (gltf.animations.length > 0) {
@@ -99,10 +104,17 @@ export class PlayerFish {
     this.lungeT = 0.3;
   }
 
+  /** Grow (or reset) the host: scales the whole body and updates its length. */
+  setGrowth(scale: number): void {
+    this.length = this.baseLength * scale;
+    this.object.scale.setScalar(scale);
+  }
+
   /** World position just behind the tail (for dash bubble emission). */
   getTailPosition(out: Vector3): Vector3 {
-    // -Z is the tail in local space (forward is +Z after alignment).
-    out.set(0, 0, -this.length * 0.55);
+    // -Z is the tail in local space (forward is +Z after alignment). The local
+    // coord is in base units; object.scale applies the growth factor.
+    out.set(0, 0, -this.baseLength * 0.55);
     return this.object.localToWorld(out);
   }
 

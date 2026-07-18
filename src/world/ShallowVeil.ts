@@ -83,6 +83,7 @@ export class ShallowVeil {
   private surfaceMat!: ShaderMaterial;
   private rayMat!: MeshBasicMaterial;
   private rayGroup!: Group;
+  private rayMeshes: { mesh: Mesh; ox: number; oz: number }[] = [];
   private swayMats: SwayMat[] = [];
   private markerRing!: Mesh;
   private markerLight!: PointLight;
@@ -263,35 +264,29 @@ export class ShallowVeil {
     });
     this.disposables.push(tex, this.rayMat);
 
-    // Merge 10 tilted planes into one draw call; the group follows the camera.
+    // Each ray keeps a FIXED offset from the camera and a yaw that faces the
+    // camera, so its viewing angle — and therefore its brightness — never
+    // changes when the player orbits the mouse. (Fixed-orientation planes
+    // read as "the sunlight moves with my mouse".)
     const rand = mulberry32(515);
-    const parts: BufferGeometry[] = [];
+    const unit = new PlaneGeometry(1, 1);
+    this.disposables.push(unit);
+    this.rayGroup = new Group();
+    this.rayGroup.renderOrder = 3;
+    this.rayMeshes = [];
     for (let i = 0; i < 10; i++) {
-      const g = new PlaneGeometry(14 + rand() * 22, 120 + rand() * 40);
-      const m = new Matrix4();
-      const q = new Quaternion();
-      const tilt = new Quaternion();
-      q.setFromAxisAngle(new Vector3(0, 1, 0), rand() * Math.PI);
-      tilt.setFromAxisAngle(new Vector3(0, 0, 1), (rand() - 0.5) * 0.35);
-      q.multiply(tilt);
       const a = rand() * Math.PI * 2;
       const r = 12 + rand() * 55;
-      m.compose(
-        new Vector3(Math.cos(a) * r, WORLD.surfaceY - 58, Math.sin(a) * r),
-        q,
-        new Vector3(1, 1, 1),
-      );
-      g.applyMatrix4(m);
-      parts.push(g);
+      const ox = Math.cos(a) * r;
+      const oz = Math.sin(a) * r;
+      const mesh = new Mesh(unit, this.rayMat);
+      mesh.scale.set(14 + rand() * 22, 120 + rand() * 40, 1);
+      // Constant camera-relative offset → constant facing yaw.
+      mesh.rotation.set(0, Math.atan2(-ox, -oz), (rand() - 0.5) * 0.3);
+      mesh.frustumCulled = false;
+      this.rayGroup.add(mesh);
+      this.rayMeshes.push({ mesh, ox, oz });
     }
-    const merged = mergeGeometries(parts);
-    for (const p of parts) p.dispose();
-    this.disposables.push(merged);
-    this.rayGroup = new Group();
-    const mesh = new Mesh(merged, this.rayMat);
-    mesh.frustumCulled = false;
-    this.rayGroup.add(mesh);
-    this.rayGroup.renderOrder = 3;
     this.group.add(this.rayGroup);
   }
 
@@ -823,8 +818,10 @@ export class ShallowVeil {
     this.fog.color.copy(this.fogNow);
     this.hemi.intensity = 1.15 - depth01 * 0.45;
 
-    // God rays: follow the camera, fade with depth, gentle shimmer.
-    this.rayGroup.position.set(camera.position.x, 0, camera.position.z);
+    // God rays: hold a constant offset from the camera, fade with depth.
+    for (const r of this.rayMeshes) {
+      r.mesh.position.set(camera.position.x + r.ox, WORLD.surfaceY - 58, camera.position.z + r.oz);
+    }
     const shallowness = Math.pow(1 - depth01, 1.4);
     this.rayMat.opacity = (0.1 + Math.sin(this.time * 0.7) * 0.025) * shallowness;
 

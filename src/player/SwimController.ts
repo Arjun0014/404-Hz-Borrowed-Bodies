@@ -1,4 +1,4 @@
-import { Quaternion, Vector3 } from 'three';
+import { Euler, Vector3 } from 'three';
 import type { Input } from '../core/Input';
 import type { Terrain } from '../world/Terrain';
 import type { CylinderCollider } from '../world/ShallowVeil';
@@ -10,8 +10,7 @@ const AIM = new Vector3();
 const DESIRED = new Vector3();
 const RIGHT = new Vector3();
 const UP = new Vector3(0, 1, 0);
-const FORWARD = new Vector3(0, 0, 1);
-const LOOK_Q = new Quaternion();
+const LOOK_E = new Euler(0, 0, 0, 'YXZ');
 const TMP = new Vector3();
 
 /**
@@ -23,7 +22,9 @@ export class SwimController {
   readonly vel = new Vector3();
   speed01 = 0;
 
-  private prevYaw = 0;
+  /** Orientation as yaw/pitch scalars — roll is structurally impossible. */
+  private curYaw = Math.PI / 2; // spawn facing +X (toward the drop-off)
+  private curPitch = 0;
   private yawRate = 0;
 
   constructor(
@@ -35,9 +36,8 @@ export class SwimController {
   ) {
     this.pos.set(WORLD.spawn.x, this.terrain.heightAt(WORLD.spawn.x, WORLD.spawn.z) + 3, WORLD.spawn.z);
     this.fish.object.position.copy(this.pos);
-    // Face +X (toward the drop-off) to match the camera's spawn yaw.
-    this.fish.object.quaternion.setFromAxisAngle(UP, Math.PI / 2);
-    this.prevYaw = Math.PI / 2;
+    LOOK_E.set(0, this.curYaw, 0);
+    this.fish.object.quaternion.setFromEuler(LOOK_E);
   }
 
   update(dt: number): void {
@@ -136,19 +136,29 @@ export class SwimController {
     // --- orientation ---------------------------------------------------------
     const speedNow = this.vel.length();
     this.speed01 = speedNow / mv.maxSpeed;
-    // Face velocity when moving; face aim when idle.
+    // Face velocity when moving; face aim when idle. Orientation is tracked
+    // as yaw/pitch scalars and rebuilt from Euler each frame, so roll (and
+    // therefore an upside-down or slanted fish) is structurally impossible.
+    // Banking is a separate visual layer on the model root.
     const faceDir = speedNow > 0.4 ? TMP.copy(this.vel).normalize() : TMP.copy(AIM);
-    LOOK_Q.setFromUnitVectors(FORWARD, faceDir);
+    const targetYaw = Math.atan2(faceDir.x, faceDir.z);
+    const targetPitch = -Math.asin(Math.min(1, Math.max(-1, faceDir.y)));
     const maxStep = mv.turnRate * dt;
-    this.fish.object.quaternion.rotateTowards(LOOK_Q, maxStep);
-
-    // Banking from yaw rate.
-    const yaw = Math.atan2(faceDir.x, faceDir.z);
-    let dYaw = yaw - this.prevYaw;
+    let dYaw = targetYaw - this.curYaw;
     if (dYaw > Math.PI) dYaw -= Math.PI * 2;
     if (dYaw < -Math.PI) dYaw += Math.PI * 2;
-    this.yawRate += (dYaw / Math.max(dt, 1e-4) - this.yawRate) * Math.min(1, 8 * dt);
-    this.prevYaw = yaw;
+    const yawStep = Math.max(-maxStep, Math.min(maxStep, dYaw));
+    this.curYaw += yawStep;
+    if (this.curYaw > Math.PI) this.curYaw -= Math.PI * 2;
+    if (this.curYaw < -Math.PI) this.curYaw += Math.PI * 2;
+    const dPitch = targetPitch - this.curPitch;
+    this.curPitch += Math.max(-maxStep, Math.min(maxStep, dPitch));
+    this.curPitch = Math.max(-1.3, Math.min(1.3, this.curPitch));
+    LOOK_E.set(this.curPitch, this.curYaw, 0);
+    this.fish.object.quaternion.setFromEuler(LOOK_E);
+
+    // Banking from actual yaw rate.
+    this.yawRate += (yawStep / Math.max(dt, 1e-4) - this.yawRate) * Math.min(1, 8 * dt);
     const bank = Math.max(-0.6, Math.min(0.6, -this.yawRate * 0.22 * Math.min(1, this.speed01 * 2)));
     this.fish.setBank(bank, dt);
 

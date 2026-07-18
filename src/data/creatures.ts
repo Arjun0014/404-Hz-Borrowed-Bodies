@@ -54,68 +54,70 @@ export interface CreatureSpecies {
   procedural: boolean;
 }
 
-// A predator eats another creature when it is at least this much longer.
-export const EAT_SIZE_RATIO = 1.3;
-// Hunger above this makes a predator/crab actively hunt.
-export const HUNT_THRESHOLD = 0.3;
+// A hunter eats another creature when it is at least this much longer.
+export const EAT_SIZE_RATIO = 1.25;
+// Hunger above this makes a predator/shark/crab actively hunt.
+export const HUNT_THRESHOLD = 0.25;
+// Foragers only turn on smaller prey when quite hungry (they mostly graze).
+export const FORAGER_HUNT_THRESHOLD = 0.5;
 
 export const SPECIES: CreatureSpecies[] = [
   // ---- schooling prey (min ~2× the 0.5 m clownfish) ----
   {
     id: 'silverside', modelUrl: fishSchool1Url, baseLength: 1.3, sizeVar: 0.22, flipForward: false,
     modelYaw: 0.87, // this model is authored ~50° off the swim axis
-    role: 'prey', maxSpeed: 6.0, accel: 22, drag: 2.1, turnRate: 4.0,
-    senseRadius: 13, schooling: true, hungerRate: 0, animSpeed: 1.3, procedural: false,
+    role: 'prey', maxSpeed: 6.4, accel: 24, drag: 2.1, turnRate: 4.2,
+    senseRadius: 14, schooling: true, hungerRate: 0, animSpeed: 1.4, procedural: false,
   },
   {
     id: 'anchovy', modelUrl: fishSchool3Url, baseLength: 1.5, sizeVar: 0.22, flipForward: false,
-    role: 'prey', maxSpeed: 5.8, accel: 21, drag: 2.0, turnRate: 3.8,
-    senseRadius: 13, schooling: true, hungerRate: 0, animSpeed: 1.2, procedural: false,
+    role: 'prey', maxSpeed: 6.0, accel: 22, drag: 2.0, turnRate: 4.0,
+    senseRadius: 14, schooling: true, hungerRate: 0, animSpeed: 1.3, procedural: false,
   },
   {
     id: 'sardine', modelUrl: fishSchool2Url, baseLength: 1.9, sizeVar: 0.22, flipForward: false,
     modelYaw: 0,
-    role: 'prey', maxSpeed: 5.4, accel: 18, drag: 1.9, turnRate: 3.4,
-    senseRadius: 14, schooling: true, hungerRate: 0, animSpeed: 1.0, procedural: false,
+    role: 'prey', maxSpeed: 5.6, accel: 19, drag: 1.9, turnRate: 3.6,
+    senseRadius: 15, schooling: true, hungerRate: 0, animSpeed: 1.1, procedural: false,
   },
 
-  // ---- solitary foragers ----
+  // ---- solitary foragers (graze; hunt small prey only when hungry) ----
   {
     id: 'wrasse', modelUrl: randomFish1Url, baseLength: 1.8, sizeVar: 0.25, flipForward: false,
     modelYaw: 0,
-    role: 'forager', maxSpeed: 4.8, accel: 16, drag: 1.7, turnRate: 2.9,
-    senseRadius: 15, schooling: false, hungerRate: 0.05, animSpeed: 1.1, procedural: false,
+    role: 'forager', maxSpeed: 5.0, accel: 17, drag: 1.7, turnRate: 3.0,
+    senseRadius: 16, schooling: false, hungerRate: 0.04, animSpeed: 1.15, procedural: false,
   },
   {
     id: 'angel', modelUrl: randomFish2Url, baseLength: 2.1, sizeVar: 0.25, flipForward: false,
-    role: 'forager', maxSpeed: 4.6, accel: 15, drag: 1.7, turnRate: 2.7,
-    senseRadius: 15, schooling: false, hungerRate: 0.05, animSpeed: 1.0, procedural: false,
+    role: 'forager', maxSpeed: 4.8, accel: 16, drag: 1.7, turnRate: 2.8,
+    senseRadius: 16, schooling: false, hungerRate: 0.04, animSpeed: 1.05, procedural: false,
   },
 
   // ---- predators (hunt the schools, flee the shark) ----
   {
     id: 'grouper', modelUrl: randomFish3Url, baseLength: 2.9, sizeVar: 0.2, flipForward: false,
-    role: 'predator', maxSpeed: 6.0, accel: 17, drag: 1.5, turnRate: 2.3,
-    senseRadius: 24, schooling: false, hungerRate: 0.06, animSpeed: 0.95, procedural: false,
+    role: 'predator', maxSpeed: 6.6, accel: 19, drag: 1.5, turnRate: 2.6,
+    senseRadius: 28, schooling: false, hungerRate: 0.07, animSpeed: 1.0, procedural: false,
   },
   {
     id: 'barracuda', modelUrl: randomFish4Url, baseLength: 3.2, sizeVar: 0.18, flipForward: false,
-    role: 'predator', maxSpeed: 8.0, accel: 22, drag: 1.4, turnRate: 2.6,
-    senseRadius: 28, schooling: false, hungerRate: 0.07, animSpeed: 1.05, procedural: false,
+    role: 'predator', maxSpeed: 8.6, accel: 24, drag: 1.4, turnRate: 3.0,
+    senseRadius: 32, schooling: false, hungerRate: 0.08, animSpeed: 1.1, procedural: false,
   },
 
-  // ---- apex shark (really big, hunts everything) ----
+  // ---- apex shark (really big, prowls and hunts everything) ----
   {
     id: 'shark', modelUrl: sharkUrl, baseLength: 6.0, sizeVar: 0.15, flipForward: false,
-    role: 'predator', apex: true, maxSpeed: 8.5, accel: 16, drag: 1.3, turnRate: 1.7,
-    senseRadius: 40, schooling: false, hungerRate: 0.08, animSpeed: 0.9, procedural: false,
+    role: 'predator', apex: true, maxSpeed: 9.0, accel: 18, drag: 1.3, turnRate: 2.3,
+    senseRadius: 46, schooling: false, hungerRate: 0.06, animSpeed: 0.95, procedural: false,
   },
 
   // ---- crab (seabed ambusher) ----
   {
     id: 'crab', modelUrl: crabUrl, baseLength: 1.35, sizeVar: 0.25, flipForward: false,
-    role: 'crab', maxSpeed: 2.8, accel: 12, drag: 3.0, turnRate: 2.2,
-    senseRadius: 10, schooling: false, hungerRate: 0.03, animSpeed: 1.0, procedural: true,
+    role: 'crab', maxSpeed: 3.0, accel: 12, drag: 3.0, turnRate: 2.2,
+    senseRadius: 11, schooling: false, hungerRate: 0.04, animSpeed: 1.0, procedural: true,
   },
 ];
 
@@ -131,15 +133,23 @@ export interface PopEntry {
   schoolSize?: number;
 }
 
-/** Populates the Shallow Veil. Doubled density + an apex shark for life. */
+/**
+ * Populates the Shallow Veil. The ecosystem keeps this whole population inside a
+ * roaming "bubble" around the player (see Ecosystem), so these counts are what
+ * you actually swim among — dense schools, roaming foragers, hunting predators,
+ * an apex shark, and seabed crabs. schoolSize groups the schooling species into
+ * coherent shoals that swim and recycle as a unit.
+ */
 export const SHALLOW_VEIL_POP: PopEntry[] = [
-  { speciesId: 'silverside', count: 52, schoolSize: 15 },
-  { speciesId: 'anchovy', count: 44, schoolSize: 13 },
-  { speciesId: 'sardine', count: 20, schoolSize: 11 },
-  { speciesId: 'wrasse', count: 10 },
-  { speciesId: 'angel', count: 8 },
-  { speciesId: 'grouper', count: 6 },
-  { speciesId: 'barracuda', count: 4 },
+  // Lean on the cheap schooling species (silverside 534 tris, anchovy 806) for a
+  // high *visible* count; keep the heavy sardine (6.5k tris) to a single shoal.
+  { speciesId: 'silverside', count: 64, schoolSize: 16 },
+  { speciesId: 'anchovy', count: 52, schoolSize: 13 },
+  { speciesId: 'sardine', count: 12, schoolSize: 12 },
+  { speciesId: 'wrasse', count: 12 },
+  { speciesId: 'angel', count: 10 },
+  { speciesId: 'grouper', count: 7 },
+  { speciesId: 'barracuda', count: 5 },
   { speciesId: 'shark', count: 2 },
   { speciesId: 'crab', count: 10 },
 ];

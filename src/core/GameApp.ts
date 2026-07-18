@@ -23,6 +23,7 @@ import { Bubbles } from '../entities/Bubbles';
 import { UnderwaterFx } from '../render/UnderwaterFx';
 import { DARTFISH } from '../data/species';
 import { Ecosystem } from '../systems/Ecosystem';
+import { Flora } from '../world/Flora';
 import { SHALLOW_VEIL_POP } from '../data/creatures';
 import type { Zone } from '../world/types';
 
@@ -51,6 +52,7 @@ export class GameApp {
   private bubbles!: Bubbles;
   private fx!: UnderwaterFx;
   private ecosystem!: Ecosystem;
+  private flora!: Flora;
 
   private started = false;
   private transitioning = false;
@@ -163,6 +165,12 @@ export class GameApp {
     this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
     this.fx = new UnderwaterFx(this.renderer, this.scene, this.playerCamera.camera);
 
+    // Seabed forest: load flora models once, then scatter them on this zone
+    // (before the ecosystem, so big-coral colliders are in place for the fish).
+    this.flora = new Flora(this.loader, this.scene);
+    await this.flora.load();
+    this.bindFlora(zone);
+
     // Living ecosystem: load every species once, then populate this zone.
     this.ecosystem = new Ecosystem(this.loader, this.scene);
     await this.ecosystem.load();
@@ -235,6 +243,7 @@ export class GameApp {
     const speed = this.transitioning ? 0 : this.controller.speed01;
     this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
     zone.update(dt, this.playerCamera.camera, this.renderer);
+    this.flora.update(dt);
     if (!this.transitioning) {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length);
     }
@@ -262,6 +271,13 @@ export class GameApp {
     );
   }
 
+  /** Scatter the seabed forest for a zone (none when the zone has no area). */
+  private bindFlora(zone: Zone): void {
+    const area = zone.getPopulationArea();
+    if (area) this.flora.bindZone(zone.terrain, area, zone.colliders);
+    else this.flora.unbind();
+  }
+
   /** Populate the ecosystem for a zone (empty when the zone has no area). */
   private bindEcosystem(zone: Zone): void {
     const area = zone.getPopulationArea();
@@ -271,6 +287,7 @@ export class GameApp {
       bounds: zone.getBounds(),
       area,
       population: area ? SHALLOW_VEIL_POP : [],
+      focus: this.controller.pos,
     });
   }
 
@@ -331,6 +348,7 @@ export class GameApp {
 
     // Rebind the persistent player rig to the new zone.
     next.getSpawn(SPAWN);
+    this.bindFlora(next);
     this.playerCamera.bindZone(next.terrain, next.colliders);
     this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
     this.bindEcosystem(next);

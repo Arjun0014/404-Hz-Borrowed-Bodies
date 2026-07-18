@@ -1,6 +1,6 @@
 import { Group, type Scene, Vector3 } from 'three';
 import { SpatialHash } from './SpatialHash';
-import { Creature, type EcoContext } from '../entities/Creature';
+import { Creature, type EcoContext, type SchoolRef } from '../entities/Creature';
 import { CreatureFactory } from '../entities/CreatureFactory';
 import { SPECIES, speciesById, type CreatureSpecies, type PopEntry } from '../data/creatures';
 import type { AssetLoader } from '../core/AssetLoader';
@@ -13,25 +13,44 @@ export interface ZoneBinding {
   /** Null → this zone has no ecosystem (e.g. the blockout). */
   area: PopulationArea | null;
   population: PopEntry[];
+  /** Where to gather the population initially (the player's spawn). */
+  focus?: Vector3;
 }
 
-// Distance tiers (m) → how often a creature thinks. Kept visible past FULL so
-// nothing pops; only AI + animation cost is throttled with distance.
-const FULL = 50;
+// Distance bands (m, from the player). The whole population is kept gathered
+// around the player by a soft "home pull", so almost everything sits inside the
+// visible bands; only AI + animation *cost* is throttled with distance, and
+// position always integrates every frame so nothing ever stutters.
+const NEAR = 55;
 const MID = 100;
-const CULL = 175;
+const FAR = 155; // beyond this we stop rendering + animating (still drifts home)
+
+// Where dead/returning creatures reappear: a ring out in the murk around the
+// player, so they fade in and swim toward you rather than popping in close.
+const RING_MIN = 55;
+const RING_MAX = 115;
+
+/** A coherent shoal: a roaming centre its members steer toward as one body. */
+interface School {
+  species: CreatureSpecies;
+  ref: SchoolRef;
+  wanderAngle: number;
+  depthOffset: number;
+}
 
 /**
- * The living ecosystem: a fixed pooled population per zone, updated in
- * distance-staggered tiers over a spatial hash. Prey school and flee, predators
- * hunt, crabs ambush, and eaten creatures respawn far away — a constant,
- * self-replenishing population at bounded CPU cost.
+ * The living ecosystem. A fixed pooled population that the player is always in
+ * the middle of: schools swim together and part around you, foragers graze,
+ * predators and an apex shark hunt the schools, crabs ambush from the seabed,
+ * and anything eaten swims back in from the deep — a constant, self-replenishing
+ * world at bounded CPU cost.
  */
 export class Ecosystem {
   private readonly group = new Group();
   private readonly factory: CreatureFactory;
   private readonly hash = new SpatialHash(10);
   private readonly creatures: Creature[] = [];
+  private readonly schools: School[] = [];
   private frame = 0;
 
   /** Debug: freeze all AI (used to calibrate model orientation). */
@@ -50,13 +69,13 @@ export class Ecosystem {
     this.group.name = 'ecosystem';
     scene.add(this.group);
     this.ctx = {
-      dt: 0,
       time: 0,
       playerPos: this._playerPos,
       playerLength: 0.5,
       terrain: null as unknown as TerrainLike,
       colliders: this.colliders,
       bounds: null as unknown as ZoneBounds,
+      habitat: null as unknown as PopulationArea,
       creatures: this.creatures,
       queryNeighbors: (x, z, r) => this.queryNeighbors(x, z, r),
     };
@@ -81,7 +100,12 @@ export class Ecosystem {
     this.ctx.terrain = b.terrain;
     this.ctx.colliders = b.colliders;
     this.ctx.bounds = b.bounds;
-    if (b.area) this.populate(b.population);
+    this.ctx.habitat = b.area as PopulationArea;
+    if (b.area) {
+      if (b.focus) this._playerPos.copy(b.focus);
+      else this._playerPos.set((b.area.minX + b.area.maxX) / 2, 0, (b.area.minZ + b.area.maxZ) / 2);
+      this.populate(b.population);
+    }
   }
 
   private despawnAll(): void {
@@ -90,6 +114,7 @@ export class Ecosystem {
       CreatureFactory.disposeInstance(c.inst);
     }
     this.creatures.length = 0;
+    this.schools.length = 0;
   }
 
   // ---- population ----------------------------------------------------------
@@ -101,27 +126,42 @@ export class Ecosystem {
       if (entry.schoolSize && sp.schooling) {
         let made = 0;
         while (made < entry.count) {
-          const center = this.randomSpot();
-          const py = this.preferredYFor(sp, center.x, center.z);
           const n = Math.min(entry.schoolSize, entry.count - made);
+          const school = this.newSchool(sp, 20, RING_MAX);
           for (let i = 0; i < n; i++) {
-            const x = center.x + (Math.random() - 0.5) * 7;
-            const z = center.z + (Math.random() - 0.5) * 7;
-            this.spawnAt(sp, x, z, py + (Math.random() - 0.5) * 2.5, phase++);
+            const x = school.ref.center.x + (Math.random() - 0.5) * 10;
+            const z = school.ref.center.z + (Math.random() - 0.5) * 10;
+            const c = this.spawnAt(sp, x, z, school.ref.center.y, phase++);
+            c.school = school.ref;
             made++;
           }
         }
       } else {
         for (let i = 0; i < entry.count; i++) {
-          const spot = this.randomSpot();
-          const py = this.preferredYFor(sp, spot.x, spot.z);
-          this.spawnAt(sp, spot.x, spot.z, py, phase++);
+          const s = this.ringSpot(20, RING_MAX);
+          const py = this.preferredYFor(sp, s.x, s.z);
+          this.spawnAt(sp, s.x, s.z, py, phase++);
         }
       }
     }
   }
 
-  private spawnAt(sp: CreatureSpecies, x: number, z: number, y: number, phase: number): void {
+  private newSchool(sp: CreatureSpecies, rMin: number, rMax: number): School {
+    const s = this.ringSpot(rMin, rMax);
+    const gy = this.terrain!.heightAt(s.x, s.z);
+    const depthOffset = 5 + Math.random() * 12;
+    const center = new Vector3(s.x, this.clampY(gy + depthOffset), s.z);
+    const school: School = {
+      species: sp,
+      ref: { center, vel: new Vector3() },
+      wanderAngle: Math.random() * Math.PI * 2,
+      depthOffset,
+    };
+    this.schools.push(school);
+    return school;
+  }
+
+  private spawnAt(sp: CreatureSpecies, x: number, z: number, y: number, phase: number): Creature {
     const inst = this.factory.createInstance(sp.id);
     this.group.add(inst.root);
     const c = new Creature(sp, inst);
@@ -133,41 +173,54 @@ export class Ecosystem {
     const spawnY = sp.role === 'crab' ? gy + len * 0.3 : Math.max(gy + len * 0.45 + 0.5, y);
     c.spawn(x, spawnY, z, py, lengthMul);
     this.creatures.push(c);
+    return c;
   }
 
   private preferredYFor(sp: CreatureSpecies, x: number, z: number): number {
     const gy = this.terrain!.heightAt(x, z);
-    const ceil = this.bounds!.ceilingY - 2;
     let y: number;
     switch (sp.role) {
-      case 'prey': y = gy + 1.5 + Math.random() * 11; break;
-      case 'forager': y = gy + 2 + Math.random() * 6; break;
-      case 'predator': y = gy + 4 + Math.random() * 13; break;
+      case 'prey': y = gy + 2 + Math.random() * 12; break;
+      case 'forager': y = gy + 2 + Math.random() * 7; break;
+      case 'predator': y = gy + 5 + Math.random() * 14; break;
       default: y = gy + sp.baseLength * 0.3; break; // crab
     }
+    return this.clampY(y);
+  }
+
+  private clampY(y: number): number {
+    const ceil = this.bounds!.ceilingY - 2;
     return Math.min(y, ceil);
   }
 
-  private randomSpot(): { x: number; z: number } {
+  /** A point on a ring around the player, clamped to the shelf habitat. */
+  private ringSpot(rMin: number, rMax: number): { x: number; z: number } {
     const a = this.area!;
-    return {
-      x: a.minX + Math.random() * (a.maxX - a.minX),
-      z: a.minZ + Math.random() * (a.maxZ - a.minZ),
-    };
+    const ang = Math.random() * Math.PI * 2;
+    const r = rMin + Math.random() * (rMax - rMin);
+    const x = clamp(this._playerPos.x + Math.cos(ang) * r, a.minX, a.maxX);
+    const z = clamp(this._playerPos.z + Math.sin(ang) * r, a.minZ, a.maxZ);
+    return { x, z };
   }
 
   private respawn(c: Creature): void {
     if (!this.area) return;
-    // Prefer a spot away from the player so it fades in through the fog.
-    let x = 0;
-    let z = 0;
-    for (let t = 0; t < 8; t++) {
-      const s = this.randomSpot();
+    let x: number;
+    let z: number;
+    let py: number;
+    if (c.school) {
+      // Rejoin the shoal so schools stay whole and replenish together.
+      x = c.school.center.x + (Math.random() - 0.5) * 10;
+      z = c.school.center.z + (Math.random() - 0.5) * 10;
+      x = clamp(x, this.area.minX, this.area.maxX);
+      z = clamp(z, this.area.minZ, this.area.maxZ);
+      py = c.school.center.y;
+    } else {
+      const s = this.ringSpot(RING_MIN, RING_MAX);
       x = s.x;
       z = s.z;
-      if (Math.hypot(x - this._playerPos.x, z - this._playerPos.z) > 45) break;
+      py = this.preferredYFor(c.species, x, z);
     }
-    const py = this.preferredYFor(c.species, x, z);
     const gy = this.terrain!.heightAt(x, z);
     const lengthMul = 1 + (Math.random() * 2 - 1) * c.species.sizeVar;
     const len = c.species.baseLength * lengthMul;
@@ -184,6 +237,12 @@ export class Ecosystem {
     this.ctx.playerLength = playerLength;
     this.ctx.time += dt;
 
+    // Roam the shoals (staggered — a couple per frame is plenty).
+    for (let i = 0; i < this.schools.length; i++) {
+      if ((this.frame + i) % 4 === 0) this.updateSchool(this.schools[i], dt * 4);
+    }
+
+    // Rebuild the neighbour grid from living creatures.
     this.hash.clear();
     for (let i = 0; i < this.creatures.length; i++) {
       const c = this.creatures[i];
@@ -197,21 +256,66 @@ export class Ecosystem {
         if (c.respawnTimer <= 0) this.respawn(c);
         continue;
       }
+
       const d2 = c.pos.distanceToSquared(this._playerPos);
-      let stride: number;
-      if (d2 < FULL * FULL) stride = 1;
-      else if (d2 < MID * MID) stride = 3;
-      else if (d2 < CULL * CULL) stride = 6;
-      else {
-        c.inst.root.visible = false;
-        continue;
+      let thinkStride: number;
+      let animStride: number;
+      let visible: boolean;
+      if (d2 < NEAR * NEAR) {
+        thinkStride = 2; animStride = 1; visible = true;
+      } else if (d2 < MID * MID) {
+        thinkStride = 5; animStride = 2; visible = true;
+      } else if (d2 < FAR * FAR) {
+        thinkStride = 10; animStride = 3; visible = true;
+      } else {
+        thinkStride = 20; animStride = 0; visible = false; // hidden: still drifts home
       }
-      c.inst.root.visible = true;
-      if ((this.frame + c.phase) % stride === 0) {
-        this.ctx.dt = dt * stride;
-        c.update(this.ctx);
+      c.inst.root.visible = visible;
+
+      const f = this.frame + c.phase;
+      if (f % thinkStride === 0) c.think(this.ctx, dt * thinkStride);
+
+      // Move every frame while visible (smooth); hidden creatures drift home
+      // slowly so they re-enter the bubble without any cost when unseen.
+      if (visible) {
+        c.move(this.ctx, dt);
+        if (animStride > 0 && f % animStride === 0) c.animate(dt * animStride);
+      } else if (f % 3 === 0) {
+        c.move(this.ctx, dt * 3);
       }
     }
+  }
+
+  /** Roam a shoal's centre, keep it near the player and on the shelf. */
+  private updateSchool(s: School, dt: number): void {
+    s.wanderAngle += (Math.random() - 0.5) * 0.8 * dt;
+    const cruise = s.species.maxSpeed * 0.5;
+    let vx = Math.sin(s.wanderAngle) * cruise;
+    let vz = Math.cos(s.wanderAngle) * cruise;
+
+    // Home pull: keep the shoal gathered around the player.
+    const dx = this._playerPos.x - s.ref.center.x;
+    const dz = this._playerPos.z - s.ref.center.z;
+    const hd = Math.hypot(dx, dz);
+    if (hd > 65) {
+      const w = Math.min((hd - 65) / 45, 1.5);
+      vx += (dx / hd) * cruise * w * 1.8;
+      vz += (dz / hd) * cruise * w * 1.8;
+    }
+
+    s.ref.vel.set(vx, 0, vz);
+    s.ref.center.x += vx * dt;
+    s.ref.center.z += vz * dt;
+
+    // Keep the centre inside the shelf, a little inset from the edges.
+    const a = this.area!;
+    s.ref.center.x = clamp(s.ref.center.x, a.minX + 8, a.maxX - 8);
+    s.ref.center.z = clamp(s.ref.center.z, a.minZ + 8, a.maxZ - 8);
+
+    // Ease depth toward this shoal's band over the local seabed.
+    const gy = this.terrain!.heightAt(s.ref.center.x, s.ref.center.z);
+    const targetY = this.clampY(gy + s.depthOffset);
+    s.ref.center.y += (targetY - s.ref.center.y) * Math.min(1, 2 * dt);
   }
 
   private queryNeighbors(x: number, z: number, r: number): number[] {
@@ -229,4 +333,8 @@ export class Ecosystem {
     this.factory.dispose();
     this.group.parent?.remove(this.group);
   }
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }

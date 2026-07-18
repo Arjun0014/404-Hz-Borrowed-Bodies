@@ -822,13 +822,17 @@ export class ShallowVeil implements Zone {
     return { targetName: 'The Drowned Garden', recommendedDominance: 'Hunter' };
   }
 
-  /** Creatures live on the shelf, never out over the open deep (x < edge). */
+  /**
+   * Creatures live on the flat shelf only: inset from the enclosing back (-X)
+   * and side (±Z) walls so they never climb them, and stopping short of the
+   * cliff lip (x < edge) so they never wander out over the open deep.
+   */
   getPopulationArea(): PopulationArea {
     return {
-      minX: WORLD.minX + 18,
-      maxX: WORLD.edgeX - 8,
-      minZ: WORLD.minZ + 18,
-      maxZ: WORLD.maxZ - 18,
+      minX: WORLD.minX + 55, // clear of the back wall (rises to minX+48)
+      maxX: WORLD.edgeX - 12, // stop short of the cliff lip
+      minZ: WORLD.minZ + 57, // clear of the side walls (rise to minZ+48 / maxZ-48)
+      maxZ: WORLD.maxZ - 57,
     };
   }
 

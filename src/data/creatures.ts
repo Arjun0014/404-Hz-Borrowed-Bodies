@@ -152,6 +152,9 @@ export const SPECIES: CreatureSpecies[] = [
   {
     id: 'crab', displayName: 'Reef Crab', modelUrl: crabUrl, baseLength: 2.7, baseHealth: 70,
     wildMaxGrowth: 0.28, flipForward: false, // keep seabed crabs from ballooning huge
+    // The wide claw-span axis fools the longest-axis heuristic into facing the
+    // crab sideways; pin the forward axis so the claws (and walk) lead. (+90°).
+    modelYaw: Math.PI / 2,
     role: 'crab', maxSpeed: 3.2, accel: 13, drag: 3.0, turnRate: 2.2,
     senseRadius: 12, schooling: false, hungerRate: 0.04, animSpeed: 1.0, procedural: true,
   },

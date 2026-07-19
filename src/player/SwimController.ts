@@ -3,6 +3,7 @@ import type { Input } from '../core/Input';
 import type { CylinderCollider, TerrainLike, ZoneBounds } from '../world/types';
 import type { PlayerFish } from '../entities/PlayerFish';
 import type { PlayerCamera } from './PlayerCamera';
+import type { MovementDef } from '../data/species';
 import { STEERING_SCHEME } from '../config';
 
 const AIM = new Vector3();
@@ -11,6 +12,10 @@ const RIGHT = new Vector3();
 const UP = new Vector3(0, 1, 0);
 const LOOK_E = new Euler(0, 0, 0, 'YXZ');
 const TMP = new Vector3();
+
+// Crab (crawl) locomotion.
+const CRAB_GRAVITY = 22; // fall accel (m/s²) once airborne
+const CRAB_JUMP = 9; // hop launch speed
 
 /**
  * Underwater kinematic swim movement: thrust along camera aim, water drag,
@@ -29,6 +34,11 @@ export class SwimController {
   private yawRate = 0;
   /** While >0, a lunge is carrying the fish faster than its normal max speed. */
   private lungeBoostT = 0;
+  /** Ability speed boost (Burst/Frenzy): a temporary max-speed multiplier. */
+  private boostT = 0;
+  private boostMult = 1;
+  /** Crab crawl: true while resting on the seabed (can jump). */
+  private grounded = false;
 
   // Zone-scoped references, swapped on descent via bindZone().
   private terrain: TerrainLike;
@@ -106,10 +116,22 @@ export class SwimController {
     this.placeAt(spawn);
   }
 
+  /** Ability speed surge: multiply max speed for a duration (Burst/Frenzy). */
+  boost(mult: number, duration: number): void {
+    this.boostMult = mult;
+    this.boostT = Math.max(this.boostT, duration);
+  }
+
   update(dt: number): void {
     const mv = this.fish.species.movement;
+    if (this.fish.species.locomotion === 'crawl') {
+      this.crawlUpdate(dt, mv);
+      return;
+    }
     const dashing = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
-    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1);
+    this.boostT = Math.max(0, this.boostT - dt);
+    const boost = this.boostT > 0 ? this.boostMult : 1;
+    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
 
     // --- input → desired thrust direction -----------------------------------
     const thrust = this.input.axis('KeyW', 'KeyS');
@@ -129,7 +151,7 @@ export class SwimController {
     const inputActive = DESIRED.lengthSq() > 0.001;
     if (inputActive) {
       DESIRED.normalize();
-      const accel = mv.accel * (dashing ? 1.7 : 1);
+      const accel = mv.accel * (dashing ? 1.7 : 1) * boost;
       this.vel.addScaledVector(DESIRED, accel * dt);
     }
 
@@ -160,14 +182,57 @@ export class SwimController {
       this.pos.y = this.bounds.ceilingY;
       if (this.vel.y > 0) this.vel.y = 0;
     }
-    // Solid obstacles (spires, monoliths): push out radially.
+    this.collideSolidsAndBounds(radius, dt);
+
+    // --- orientation ---------------------------------------------------------
+    const speedNow = this.vel.length();
+    this.speed01 = speedNow / mv.maxSpeed;
+    this.dashOutput = dashing
+      ? Math.min(1, this.speed01 / 1.3)
+      : Math.max(0, this.speed01 - 0.6) * 0.5;
+    // Face the STEERING direction (camera aim), not raw velocity. The camera
+    // follows the mouse instantly, so facing velocity (which lags via turnRate)
+    // left big low-turn hosts trailing the camera — they drifted sideways across
+    // the view. Facing the aim keeps the body centered under the camera for every
+    // host. Orientation is tracked as yaw/pitch scalars rebuilt from Euler each
+    // frame, so roll (upside-down/slanted) is structurally impossible; banking is
+    // a separate layer on the model root. The species turnRate still flavours how
+    // snappy the turn reads, but a floor keeps even a shark tracking the camera.
+    const faceDir = TMP.copy(AIM).normalize();
+    const targetYaw = Math.atan2(faceDir.x, faceDir.z);
+    const targetPitch = -Math.asin(Math.min(1, Math.max(-1, faceDir.y)));
+    const orientRate = Math.max(mv.turnRate * 1.8, 4.0);
+    const maxStep = orientRate * this.fish.agility * dt;
+    let dYaw = targetYaw - this.curYaw;
+    if (dYaw > Math.PI) dYaw -= Math.PI * 2;
+    if (dYaw < -Math.PI) dYaw += Math.PI * 2;
+    const yawStep = Math.max(-maxStep, Math.min(maxStep, dYaw));
+    this.curYaw += yawStep;
+    if (this.curYaw > Math.PI) this.curYaw -= Math.PI * 2;
+    if (this.curYaw < -Math.PI) this.curYaw += Math.PI * 2;
+    const dPitch = targetPitch - this.curPitch;
+    this.curPitch += Math.max(-maxStep, Math.min(maxStep, dPitch));
+    this.curPitch = Math.max(-1.3, Math.min(1.3, this.curPitch));
+    LOOK_E.set(this.curPitch, this.curYaw, 0);
+    this.fish.object.quaternion.setFromEuler(LOOK_E);
+
+    // Banking from actual yaw rate.
+    this.yawRate += (yawStep / Math.max(dt, 1e-4) - this.yawRate) * Math.min(1, 8 * dt);
+    const bank = Math.max(-0.6, Math.min(0.6, -this.yawRate * 0.22 * Math.min(1, this.speed01 * 2)));
+    this.fish.setBank(bank, dt);
+
+    this.fish.object.position.copy(this.pos);
+    this.fish.update(dt, Math.min(1, this.speed01));
+  }
+
+  /** Shared solid-obstacle push-out + soft-box boundary clamp (swim + crawl). */
+  private collideSolidsAndBounds(radius: number, dt: number): void {
     for (const c of this.colliders) {
       if (this.pos.y > c.top + radius) continue;
       let dx = this.pos.x - c.x;
       let dz = this.pos.z - c.z;
       let d = Math.hypot(dx, dz);
       if (d < 1e-4) {
-        // Degenerate: exactly at the axis — pick any outward direction.
         dx = 1;
         dz = 0;
         d = 1;
@@ -177,7 +242,6 @@ export class SwimController {
         const push = (minD - d) / d;
         this.pos.x += dx * push;
         this.pos.z += dz * push;
-        // Kill the inward velocity component.
         const inward = (this.vel.x * dx + this.vel.z * dz) / (d * d);
         if (inward < 0) {
           this.vel.x -= dx * inward;
@@ -185,9 +249,6 @@ export class SwimController {
         }
       }
     }
-
-    // Soft box current + hard clamp, per axis. The +X open edge is far out in
-    // the deep, so the player can swim well past the shelf before it pushes.
     const b = this.bounds;
     const m = b.softMargin;
     if (this.pos.x > b.maxX) {
@@ -208,39 +269,92 @@ export class SwimController {
       this.vel.z += Math.min(1, over / m) * 16 * dt;
       if (over > m) this.pos.z = b.minZ - m;
     }
+  }
 
-    // --- orientation ---------------------------------------------------------
-    const speedNow = this.vel.length();
+  /**
+   * Crab locomotion: a grounded seabed walker. WASD moves horizontally relative
+   * to the camera (no free swimming up/down); Space HOPS; gravity pulls it back
+   * to the seabed. The body faces its walk direction and stays upright — a proper
+   * crawl instead of the old sideways scuttle.
+   */
+  private crawlUpdate(dt: number, mv: MovementDef): void {
+    const dashing = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
+    this.boostT = Math.max(0, this.boostT - dt);
+    const boost = this.boostT > 0 ? this.boostMult : 1;
+    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
+
+    // Horizontal movement, camera-relative (aim flattened to the seabed plane).
+    const thrust = this.input.axis('KeyW', 'KeyS');
+    const strafe = this.input.axis('KeyD', 'KeyA');
+    this.camera.getAimDir(AIM);
+    AIM.y = 0;
+    if (AIM.lengthSq() < 1e-6) AIM.set(Math.sin(this.curYaw), 0, Math.cos(this.curYaw));
+    AIM.normalize();
+    RIGHT.crossVectors(AIM, UP).normalize();
+    DESIRED.set(0, 0, 0).addScaledVector(AIM, thrust).addScaledVector(RIGHT, strafe);
+    const moving = DESIRED.lengthSq() > 0.001;
+    if (moving) {
+      DESIRED.normalize();
+      const accel = mv.accel * (dashing ? 1.5 : 1) * boost;
+      this.vel.x += DESIRED.x * accel * dt;
+      this.vel.z += DESIRED.z * accel * dt;
+    }
+    // Horizontal ground drag + speed clamp (Y is handled by gravity, not drag).
+    const hdrag = moving ? mv.drag : mv.drag * 1.7;
+    const df = Math.exp(-hdrag * dt);
+    this.vel.x *= df;
+    this.vel.z *= df;
+    const hspeed = Math.hypot(this.vel.x, this.vel.z);
+    if (hspeed > maxSpeed) {
+      const k = maxSpeed / hspeed;
+      this.vel.x *= k;
+      this.vel.z *= k;
+    }
+
+    // Jump + gravity.
+    const radius = this.fish.length * 0.4;
+    const groundNow = this.terrain.heightAt(this.pos.x, this.pos.z) + radius;
+    this.grounded = this.pos.y <= groundNow + 0.06;
+    if (this.grounded && this.input.isDown('Space') && this.vel.y <= 0.1) {
+      this.vel.y = CRAB_JUMP;
+      this.grounded = false;
+    }
+    this.vel.y -= CRAB_GRAVITY * dt;
+
+    this.pos.addScaledVector(this.vel, dt);
+
+    // Land on the seabed / cap at the ceiling.
+    const groundAfter = this.terrain.heightAt(this.pos.x, this.pos.z) + radius;
+    if (this.pos.y < groundAfter) {
+      this.pos.y = groundAfter;
+      if (this.vel.y < 0) this.vel.y = 0;
+    }
+    if (this.pos.y > this.bounds.ceilingY) {
+      this.pos.y = this.bounds.ceilingY;
+      if (this.vel.y > 0) this.vel.y = 0;
+    }
+    this.collideSolidsAndBounds(radius, dt);
+
+    // Orientation: upright, facing the walk direction (aim when standing still).
+    const speedNow = Math.hypot(this.vel.x, this.vel.z);
     this.speed01 = speedNow / mv.maxSpeed;
-    this.dashOutput = dashing
-      ? Math.min(1, this.speed01 / 1.3)
-      : Math.max(0, this.speed01 - 0.6) * 0.5;
-    // Face velocity when moving; face aim when idle. Orientation is tracked
-    // as yaw/pitch scalars and rebuilt from Euler each frame, so roll (and
-    // therefore an upside-down or slanted fish) is structurally impossible.
-    // Banking is a separate visual layer on the model root.
-    const faceDir = speedNow > 0.4 ? TMP.copy(this.vel).normalize() : TMP.copy(AIM);
-    const targetYaw = Math.atan2(faceDir.x, faceDir.z);
-    const targetPitch = -Math.asin(Math.min(1, Math.max(-1, faceDir.y)));
-    const maxStep = mv.turnRate * this.fish.agility * dt;
-    let dYaw = targetYaw - this.curYaw;
-    if (dYaw > Math.PI) dYaw -= Math.PI * 2;
-    if (dYaw < -Math.PI) dYaw += Math.PI * 2;
-    const yawStep = Math.max(-maxStep, Math.min(maxStep, dYaw));
-    this.curYaw += yawStep;
-    if (this.curYaw > Math.PI) this.curYaw -= Math.PI * 2;
-    if (this.curYaw < -Math.PI) this.curYaw += Math.PI * 2;
-    const dPitch = targetPitch - this.curPitch;
-    this.curPitch += Math.max(-maxStep, Math.min(maxStep, dPitch));
-    this.curPitch = Math.max(-1.3, Math.min(1.3, this.curPitch));
+    this.dashOutput = dashing ? Math.min(1, this.speed01 / 1.3) : 0;
+    const faceDir = moving ? TMP.set(this.vel.x, 0, this.vel.z) : TMP.copy(AIM);
+    if (faceDir.lengthSq() > 1e-5) {
+      faceDir.normalize();
+      const targetYaw = Math.atan2(faceDir.x, faceDir.z);
+      const maxStep = Math.max(mv.turnRate * 2.2, 4.5) * dt;
+      let dYaw = targetYaw - this.curYaw;
+      if (dYaw > Math.PI) dYaw -= Math.PI * 2;
+      if (dYaw < -Math.PI) dYaw += Math.PI * 2;
+      this.curYaw += Math.max(-maxStep, Math.min(maxStep, dYaw));
+      if (this.curYaw > Math.PI) this.curYaw -= Math.PI * 2;
+      if (this.curYaw < -Math.PI) this.curYaw += Math.PI * 2;
+    }
+    this.curPitch += (0 - this.curPitch) * Math.min(1, 8 * dt); // settle upright
     LOOK_E.set(this.curPitch, this.curYaw, 0);
     this.fish.object.quaternion.setFromEuler(LOOK_E);
-
-    // Banking from actual yaw rate.
-    this.yawRate += (yawStep / Math.max(dt, 1e-4) - this.yawRate) * Math.min(1, 8 * dt);
-    const bank = Math.max(-0.6, Math.min(0.6, -this.yawRate * 0.22 * Math.min(1, this.speed01 * 2)));
-    this.fish.setBank(bank, dt);
-
+    this.fish.setBank(0, dt);
     this.fish.object.position.copy(this.pos);
     this.fish.update(dt, Math.min(1, this.speed01));
   }

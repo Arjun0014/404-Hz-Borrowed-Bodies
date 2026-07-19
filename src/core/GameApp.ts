@@ -36,6 +36,7 @@ import { Flora } from '../world/Flora';
 import { PlayerCombat } from '../player/PlayerCombat';
 import { PlayerGrowth } from '../player/PlayerGrowth';
 import { PlayerPossession } from '../player/PlayerPossession';
+import { PlayerAbility } from '../player/PlayerAbility';
 import { PlayerResonance } from '../player/PlayerResonance';
 import { PlayerConnection } from '../player/PlayerConnection';
 import { Dominance } from '../systems/Dominance';
@@ -90,6 +91,7 @@ export class GameApp {
   private combat!: PlayerCombat;
   private growth!: PlayerGrowth;
   private possession!: PlayerPossession;
+  private ability!: PlayerAbility;
   private resonance!: PlayerResonance;
   private connection!: PlayerConnection;
   private dominance!: Dominance;
@@ -293,6 +295,18 @@ export class GameApp {
     this.possession.onPossessed = (name, speciesId) => this.onPossessed(name, speciesId);
     this.possession.onRiskResult = (success, name) => this.onRiskResult(success, name);
 
+    // Ability: the current host's one special move (Q). Distinct per curated host.
+    this.ability = new PlayerAbility(
+      this.fish,
+      this.controller,
+      this.combat,
+      this.playerCamera,
+      this.ecosystem,
+      this.input,
+      this.sfx,
+    );
+    this.ability.onActivate = (name) => this.showAbilityToast(name);
+
     // Connection: the entity's grip. Rises continuously (faster in bigger hosts),
     // eased only by slipping into a fresh body; full Connection ends the run.
     this.connection = new PlayerConnection();
@@ -402,10 +416,16 @@ export class GameApp {
     if (!this.transitioning) {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
       if (this.started && !possessing) this.combat.update(dt);
+      if (this.started && !possessing && !dead) {
+        // Q is "stay" while a descent prompt is up, so drop the ability tap then.
+        if (this.promptShown) this.input.consumeAbility();
+        else this.ability.update(dt);
+      }
       this.updateConnection(dt, dead);
       this.updateCombatHud();
       this.updateGrowthHud();
       this.updateResonanceHud();
+      this.updateAbilityHud();
       this.updateDominanceHud();
       this.updatePossessHud();
       this.updateLockReticle();
@@ -510,6 +530,41 @@ export class GameApp {
     this.stageToastUntil = performance.now() + 2400;
   }
 
+  private showAbilityToast(name: string): void {
+    const el = document.getElementById('stage-toast')!;
+    el.classList.remove('dom', 'possess', 'resonance', 'fail');
+    el.textContent = `${name}!`;
+    el.classList.remove('hidden');
+    void el.offsetWidth;
+    this.stageToastUntil = performance.now() + 1200;
+  }
+
+  // ---- ability HUD (host special move) ------------------------------------
+
+  private abilityHudEl: HTMLElement | null = null;
+  private abilityNameEl: HTMLElement | null = null;
+  private abilityFillEl: HTMLElement | null = null;
+  private abilityReadyPct = -1;
+
+  private updateAbilityHud(): void {
+    if (!this.ability || !this.started) return;
+    this.abilityHudEl ||= document.getElementById('ability-hud');
+    this.abilityNameEl ||= document.getElementById('ability-name');
+    this.abilityFillEl ||= document.getElementById('ability-fill');
+    if (!this.abilityHudEl) return;
+    const has = this.ability.has;
+    this.abilityHudEl.classList.toggle('hidden', !has);
+    if (!has) return;
+    if (this.abilityNameEl) this.abilityNameEl.textContent = this.fish.species.ability.name;
+    const pct = Math.round(this.ability.ready01 * 100);
+    if (this.abilityFillEl && pct !== this.abilityReadyPct) {
+      this.abilityReadyPct = pct;
+      this.abilityFillEl.style.width = `${pct}%`;
+    }
+    this.abilityHudEl.classList.toggle('ready', this.ability.isReady);
+    this.abilityHudEl.classList.toggle('active', this.ability.isActive);
+  }
+
   // ---- resonance HUD (possession charge) ----------------------------------
 
   private resonanceGaugeEl: HTMLElement | null = null;
@@ -563,10 +618,12 @@ export class GameApp {
   private updateConnection(dt: number, dead: boolean): void {
     if (!this.connection) return;
     if (this.started && !dead) {
-      this.connection.update(dt, this.fish.length);
+      // Per-host signal cost: a shark draws the entity far faster than a quiet crab.
+      const connMult = this.fish.species.connectionMult;
+      this.connection.update(dt, this.fish.length, connMult);
       // Resonance also trickles up over time, paced to the Connection rise, so the
       // means to escape builds alongside the pressure. Eating is still far faster.
-      this.resonance.tickPassive(dt, PlayerConnection.riseRate(this.fish.length));
+      this.resonance.tickPassive(dt, PlayerConnection.riseRate(this.fish.length, connMult));
     }
     if (!this.started) return;
 
@@ -754,6 +811,8 @@ export class GameApp {
     // A fresh body loosens the entity's grip; a recently-worn one barely helps.
     const fresh = this.connection.freshness(speciesId);
     this.connection.possess(speciesId);
+    this.ability.reset(); // the new host's special move is ready immediately
+    this.abilityReadyPct = -1; // force the ability HUD to repaint for the new host
 
     const flash = document.getElementById('possess-flash');
     if (flash) {
@@ -767,13 +826,16 @@ export class GameApp {
     const el = document.getElementById('stage-toast')!;
     el.classList.remove('dom', 'resonance', 'fail');
     el.classList.add('possess');
-    el.textContent = `Possessed · ${name}`;
+    const abil = this.fish.species.ability;
+    el.textContent =
+      abil.kind !== 'none' ? `Possessed · ${name}  —  ${abil.name} [Q]` : `Possessed · ${name}`;
     el.classList.remove('hidden');
     void el.offsetWidth;
     this.stageToastUntil = performance.now() + 2600;
 
     // Teach the contamination rule: a familiar body gives little relief.
     if (fresh < 0.5) this.showHint('a familiar body — the signal barely loosens', 2.4);
+    else this.showHint(this.fish.species.identity, 3.2); // introduce the new host
   }
 
   // ---- lock-on (hold right mouse) -----------------------------------------

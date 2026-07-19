@@ -15,6 +15,8 @@ export class Input {
   private attackLatched = false;
   /** Risk-snatch (G) tap edge, latched until consumed once per frame. */
   private riskLatched = false;
+  /** Special-ability (Q) tap edge, latched until consumed once per frame. */
+  private abilityLatched = false;
   private readonly el: HTMLElement;
 
   constructor(el: HTMLElement) {
@@ -25,6 +27,8 @@ export class Input {
       // Risk-snatch is a deliberate tap: latch only the initial press, not the
       // OS key-repeat, so holding G doesn't machine-gun the gamble.
       if (e.code === 'KeyG' && this.pointerLocked && !e.repeat) this.riskLatched = true;
+      // Special ability (Q) — a deliberate tap; ignore OS key-repeat.
+      if (e.code === 'KeyQ' && this.pointerLocked && !e.repeat) this.abilityLatched = true;
       this.keys.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -32,6 +36,7 @@ export class Input {
       this.keys.clear();
       this.rmbDown = false;
       this.riskLatched = false;
+      this.abilityLatched = false;
     });
 
     document.addEventListener('pointerlockchange', () => {
@@ -78,6 +83,13 @@ export class Input {
     const r = this.riskLatched;
     this.riskLatched = false;
     return r;
+  }
+
+  /** True once per Q tap (special ability); consumes the latch. */
+  consumeAbility(): boolean {
+    const a = this.abilityLatched;
+    this.abilityLatched = false;
+    return a;
   }
 
   requestLock(): void {

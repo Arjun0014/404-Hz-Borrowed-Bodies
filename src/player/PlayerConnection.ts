@@ -59,13 +59,15 @@ export class PlayerConnection {
   }
 
   /** Connection gained per second in a host of this length — the pressure's pace.
+   *  connMult is the host's per-species signal cost (species.ts connectionMult).
    *  Other systems (e.g. passive Resonance) can mirror this to move in lockstep. */
-  static riseRate(hostLength: number): number {
-    return RISE_PER_SEC * this.sensitivity(hostLength);
+  static riseRate(hostLength: number, connMult = 1): number {
+    return RISE_PER_SEC * this.sensitivity(hostLength) * connMult;
   }
 
-  /** Rise over time (scaled by host size) and decay the contamination memory. */
-  update(dt: number, hostLength: number): void {
+  /** Rise over time (scaled by host size AND per-host signal cost) and decay the
+   *  contamination memory. */
+  update(dt: number, hostLength: number, connMult = 1): void {
     if (this.contamination.size) {
       for (const [k, v] of this.contamination) {
         const nv = v - CONTAM_DECAY_PER_SEC * dt;
@@ -74,7 +76,7 @@ export class PlayerConnection {
       }
     }
     if (this.frozen) return;
-    this.value = Math.min(1, this.value + RISE_PER_SEC * PlayerConnection.sensitivity(hostLength) * dt);
+    this.value = Math.min(1, this.value + PlayerConnection.riseRate(hostLength, connMult) * dt);
     if (this.value >= 1 && !this.wasFull) {
       this.wasFull = true;
       this.onFull();

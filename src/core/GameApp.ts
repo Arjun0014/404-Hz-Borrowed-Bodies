@@ -28,6 +28,7 @@ import { PlayerCombat } from '../player/PlayerCombat';
 import { PlayerGrowth } from '../player/PlayerGrowth';
 import { PlayerPossession } from '../player/PlayerPossession';
 import { PlayerResonance } from '../player/PlayerResonance';
+import { PlayerConnection } from '../player/PlayerConnection';
 import { Dominance } from '../systems/Dominance';
 import { Sfx, AMBIENT } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
@@ -73,6 +74,7 @@ export class GameApp {
   private growth!: PlayerGrowth;
   private possession!: PlayerPossession;
   private resonance!: PlayerResonance;
+  private connection!: PlayerConnection;
   private dominance!: Dominance;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
@@ -121,6 +123,13 @@ export class GameApp {
         this.bubbles?.setPixelRatio(this.renderer.getPixelRatio());
         this.fx?.resize(this.renderer);
         this.showHint(`quality: ${this.quality.level}`, 1.6);
+      } else if (e.code === 'Backquote') {
+        // Debug/balancing: freeze the Connection rise (` key).
+        e.preventDefault();
+        if (this.connection) {
+          const frozen = this.connection.toggleFreeze();
+          this.showHint(`connection ${frozen ? 'FROZEN (debug)' : 'resumed'}`, 1.6);
+        }
       } else if (this.promptShown && !this.transitioning) {
         if (e.code === 'KeyE') {
           e.preventDefault();
@@ -251,6 +260,11 @@ export class GameApp {
     this.possession.onPossessed = (name, speciesId) => this.onPossessed(name, speciesId);
     this.possession.onRiskResult = (success, name) => this.onRiskResult(success, name);
 
+    // Connection: the entity's grip. Rises continuously (faster in bigger hosts),
+    // eased only by slipping into a fresh body; full Connection ends the run.
+    this.connection = new PlayerConnection();
+    this.connection.onFull = () => this.onConnectionFull();
+
     this.updateZoneTag();
 
     loadingEl.classList.add('hidden');
@@ -271,6 +285,7 @@ export class GameApp {
       document.getElementById('dominance-hud')!.classList.remove('hidden');
       document.getElementById('growth-hud')!.classList.remove('hidden');
       document.getElementById('resonance-gauge')!.classList.remove('hidden');
+      document.getElementById('connection-hud')!.classList.remove('hidden');
       void this.sfx.load();
       this.updateZoneAmbient();
       this.spawnGrace = 3.5; // a calm moment before predators lock on
@@ -354,6 +369,7 @@ export class GameApp {
     if (!this.transitioning) {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
       if (this.started && !possessing) this.combat.update(dt);
+      this.updateConnection(dt, dead);
       this.updateCombatHud();
       this.updateGrowthHud();
       this.updateResonanceHud();
@@ -388,6 +404,8 @@ export class GameApp {
       this.controller.pos,
       zone.particleCount,
       this.ecosystem?.count ?? 0,
+      this.connection && this.started ? this.connection.value01 * 100 : -1,
+      this.connection?.frozen ?? false,
     );
   }
 
@@ -490,6 +508,79 @@ export class GameApp {
     this.stageToastUntil = performance.now() + 2200;
   }
 
+  // ---- connection (the entity's grip) -------------------------------------
+
+  private connFillEl: HTMLElement | null = null;
+  private connPctEl: HTMLElement | null = null;
+  private connHudEl: HTMLElement | null = null;
+  private connWarnEl: HTMLElement | null = null;
+  private connVigEl: HTMLElement | null = null;
+  private connBeatT = 0;
+
+  /** Rise Connection, then drive its HUD bar, warning, vignette, and dread audio. */
+  private updateConnection(dt: number, dead: boolean): void {
+    if (!this.connection) return;
+    if (this.started && !dead) {
+      this.connection.update(dt, this.fish.length);
+      // Resonance also trickles up over time, paced to the Connection rise, so the
+      // means to escape builds alongside the pressure. Eating is still far faster.
+      this.resonance.tickPassive(dt, PlayerConnection.riseRate(this.fish.length));
+    }
+    if (!this.started) return;
+
+    const lvl = this.connection.value01;
+    const tier = this.connection.tier;
+    this.connFillEl ||= document.getElementById('connection-fill');
+    this.connPctEl ||= document.getElementById('connection-pct');
+    this.connHudEl ||= document.getElementById('connection-hud');
+    this.connWarnEl ||= document.getElementById('connection-warning');
+    this.connVigEl ||= document.getElementById('connection-vignette');
+
+    if (this.connFillEl) this.connFillEl.style.width = `${lvl * 100}%`;
+    if (this.connPctEl) this.connPctEl.textContent = `${Math.round(lvl * 100)}%`;
+    if (this.connHudEl) {
+      this.connHudEl.classList.toggle('rising', tier === 'rising');
+      this.connHudEl.classList.toggle('high', tier === 'high');
+      this.connHudEl.classList.toggle('critical', tier === 'critical');
+    }
+    this.connWarnEl?.classList.toggle('hidden', tier !== 'critical' || dead);
+
+    // Eldritch vignette — creeps in from ~40%, pulses at critical.
+    if (this.connVigEl) {
+      const vig = dead ? 0 : Math.max(0, (lvl - 0.4) / 0.6) * 0.85;
+      this.connVigEl.style.opacity = String(vig);
+      this.connVigEl.classList.toggle('critical', tier === 'critical' && !dead);
+    }
+
+    // Dread audio: a swelling drone + a heartbeat, both only from the "high" band
+    // (70%+) so calm/rising stays silent; the beat quickens toward full.
+    this.sfx.setConnectionDrone(dead ? 0 : lvl);
+    if (!dead && lvl > 0.7) {
+      this.connBeatT -= dt;
+      if (this.connBeatT <= 0) {
+        const t = (lvl - 0.7) / 0.3; // 0 at 70% → 1 at full
+        this.sfx.heartbeat(t);
+        this.connBeatT = 1.4 - t * 0.98; // 1.4 s → ~0.42 s between beats
+      }
+    }
+  }
+
+  private onConnectionFull(): void {
+    this.endRun(
+      'THE SIGNAL TAKES HOLD',
+      'the entity seizes your consciousness',
+      'signal',
+    );
+  }
+
+  // --- debug/balancing (callable from the dev console via __game) ---
+  setConnection(v: number): void {
+    this.connection?.setLevel(v);
+  }
+  freezeConnection(on = true): void {
+    if (this.connection) this.connection.frozen = on;
+  }
+
   // ---- dominance HUD -------------------------------------------------------
 
   private domRankEl: HTMLElement | null = null;
@@ -590,11 +681,15 @@ export class GameApp {
     this.stageToastUntil = performance.now() + 2200;
   }
 
-  /** A takeover completed: adopt the new host, flash, toast, and persist it. */
+  /** A takeover completed: adopt the new host, ease Connection, flash, toast. */
   private onPossessed(name: string, speciesId: string): void {
     this.runState.data.hostSpeciesId = speciesId;
     this.runState.save();
     this.spawnGrace = 2.5; // a beat of peace to settle into the new body
+
+    // A fresh body loosens the entity's grip; a recently-worn one barely helps.
+    const fresh = this.connection.freshness(speciesId);
+    this.connection.possess(speciesId);
 
     const flash = document.getElementById('possess-flash');
     if (flash) {
@@ -612,6 +707,9 @@ export class GameApp {
     el.classList.remove('hidden');
     void el.offsetWidth;
     this.stageToastUntil = performance.now() + 2600;
+
+    // Teach the contamination rule: a familiar body gives little relief.
+    if (fresh < 0.5) this.showHint('a familiar body — the signal barely loosens', 2.4);
   }
 
   // ---- lock-on (hold right mouse) -----------------------------------------
@@ -689,14 +787,30 @@ export class GameApp {
   }
 
   private onHostDeath(): void {
+    this.endRun('YOUR HOST HAS DIED', 'the signal claims another body');
+  }
+
+  /**
+   * End the run and show the fail screen. Both fail states route here: the host
+   * dying in combat, and Connection reaching full (the entity taking control,
+   * flagged with `variant: 'signal'` for its eldritch styling/copy).
+   */
+  private endRun(title: string, sub: string, variant?: 'signal'): void {
+    this.combat.dead = true; // gate control everywhere + enable R to restart
     document.exitPointerLock?.();
     this.possession?.reset();
     this.lockedCreature = null;
     this.playerCamera?.setLockTarget(null);
     this.damageBars.hideAll();
+    this.sfx.setConnectionDrone(0);
     document.getElementById('lock-reticle')?.classList.add('hidden');
     document.getElementById('possess-prompt')?.classList.add('hidden');
-    document.getElementById('death-screen')!.classList.remove('hidden');
+    document.getElementById('connection-warning')?.classList.add('hidden');
+    const ds = document.getElementById('death-screen')!;
+    (ds.querySelector('.death-title') as HTMLElement).textContent = title;
+    (ds.querySelector('.death-sub') as HTMLElement).textContent = sub;
+    ds.classList.toggle('signal', variant === 'signal');
+    ds.classList.remove('hidden');
     document.getElementById('resume-chip')!.classList.add('hidden');
   }
 

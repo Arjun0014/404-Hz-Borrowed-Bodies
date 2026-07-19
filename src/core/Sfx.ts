@@ -35,6 +35,12 @@ export class Sfx {
   private currentAmbientUrl = '';
   private readonly ambientCache = new Map<string, AudioBuffer>();
 
+  // Connection dread drone (persistent, fades with Connection level).
+  private droneOsc: OscillatorNode | null = null;
+  private droneSub: OscillatorNode | null = null;
+  private droneFilter: BiquadFilterNode | null = null;
+  private droneGain: GainNode | null = null;
+
   private ac(): AudioContext | null {
     if (!this.enabled) return null;
     if (!this.ctx) {
@@ -228,6 +234,64 @@ export class Sfx {
     osc.connect(filt).connect(g).connect(this.master);
     osc.start(t);
     osc.stop(t + 0.6);
+  }
+
+  /**
+   * The Connection dread drone — a persistent low eldritch hum that fades in past
+   * ~40% Connection and grows louder/brighter toward full. Call every frame with
+   * the current level; it lazily builds the graph and just retunes it after.
+   */
+  setConnectionDrone(level: number): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    if (!this.droneGain) {
+      this.droneGain = ac.createGain();
+      this.droneGain.gain.value = 0.0001;
+      this.droneFilter = ac.createBiquadFilter();
+      this.droneFilter.type = 'lowpass';
+      this.droneFilter.frequency.value = 200;
+      this.droneOsc = ac.createOscillator();
+      this.droneOsc.type = 'sawtooth';
+      this.droneOsc.frequency.value = 52;
+      this.droneSub = ac.createOscillator();
+      this.droneSub.type = 'sine';
+      this.droneSub.frequency.value = 38.5; // slight beating against the saw
+      this.droneOsc.connect(this.droneFilter);
+      this.droneSub.connect(this.droneFilter);
+      this.droneFilter.connect(this.droneGain).connect(this.master);
+      this.droneOsc.start();
+      this.droneSub.start();
+    }
+    const L = Math.max(0, Math.min(1, level));
+    // Silent until the "high" band (70%); swells from there toward full.
+    const g = L < 0.7 ? 0.0001 : Math.max(0.0001, ((L - 0.7) / 0.3) * 0.24);
+    this.droneGain.gain.setTargetAtTime(g, t, 0.4);
+    this.droneFilter?.frequency.setTargetAtTime(200 + L * 950, t, 0.4);
+  }
+
+  /** A single heartbeat thump (lub-dub) — quickens as Connection rises. */
+  heartbeat(intensity = 1): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const master = this.master;
+    const t = ac.currentTime;
+    const v = 0.16 + Math.max(0, Math.min(1, intensity)) * 0.16;
+    const beat = (at: number, gain: number): void => {
+      const osc = ac.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(90, at);
+      osc.frequency.exponentialRampToValueAtTime(42, at + 0.14);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(gain, at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.18);
+      osc.connect(g).connect(master);
+      osc.start(at);
+      osc.stop(at + 0.2);
+    };
+    beat(t, v); // lub
+    beat(t + 0.16, v * 0.72); // dub
   }
 
   /** A risk-snatch failed — a harsh dissonant buzz-down (the signal rejected). */

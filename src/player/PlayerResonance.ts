@@ -40,6 +40,20 @@ export class PlayerResonance {
     }
   }
 
+  /**
+   * Slow passive trickle over time, paced to match the Connection rise (so as the
+   * entity's grip climbs, your means to escape into a fresh body climbs with it).
+   * `ratePerSec` is on the 0..1 meter scale. Eating is still the fast way to fill.
+   */
+  tickPassive(dt: number, ratePerSec: number): void {
+    if (this.value >= 1) return;
+    this.value = Math.min(1, this.value + Math.max(0, ratePerSec) * dt);
+    if (this.isFull && !this.wasFull) {
+      this.wasFull = true;
+      this.onFull();
+    }
+  }
+
   /** Spend the whole charge on a completed possession. */
   spend(): void {
     this.value = 0;

@@ -33,6 +33,8 @@ export class DebugOverlay {
     playerPos: Vector3,
     particleCount: number,
     creatureCount = 0,
+    connectionPct = -1,
+    connectionFrozen = false,
   ): void {
     this.timer += dt;
     if (this.timer < 0.25 || !this.visible) return;
@@ -53,6 +55,9 @@ export class DebugOverlay {
       `js heap    ${heap}\n` +
       `particles  ${particleCount}\n` +
       `creatures  ${creatureCount}\n` +
+      (connectionPct >= 0
+        ? `connection ${connectionPct.toFixed(0)}%${connectionFrozen ? ' (frozen)' : ''}\n`
+        : '') +
       `quality    ${quality.level}\n` +
       `pos        ${playerPos.x.toFixed(0)}, ${playerPos.y.toFixed(0)}, ${playerPos.z.toFixed(0)}\n` +
       `depth      ${depth} m`;

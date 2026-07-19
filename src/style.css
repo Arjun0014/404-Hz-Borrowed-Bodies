@@ -401,6 +401,77 @@ html, body {
   text-shadow: 0 0 16px rgba(255, 60, 50, 0.5);
 }
 
+/* ---- Connection: the entity's grip. The most prominent bar (top center). ---- */
+#connection-hud {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  width: 440px; max-width: 74vw; z-index: 10; text-align: left;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
+}
+#connection-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 5px; font-size: 12px; letter-spacing: 0.28em; text-transform: uppercase;
+}
+#connection-label { color: #c9a0ff; font-weight: 700; }
+#connection-pct { color: #e6d0ff; font-weight: 700; letter-spacing: 0.1em; }
+#connection-bar {
+  height: 12px; border-radius: 7px;
+  background: rgba(14, 4, 26, 0.78);
+  border: 1px solid rgba(170, 120, 255, 0.5);
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), inset 0 0 10px rgba(120, 60, 220, 0.15);
+  transition: box-shadow 0.4s, border-color 0.4s;
+}
+#connection-fill {
+  width: 0%; height: 100%; border-radius: 6px;
+  background: linear-gradient(90deg, #6a3fd0, #b06fff);
+  transition: width 0.25s linear, background 0.5s;
+}
+#connection-hud.rising #connection-fill { background: linear-gradient(90deg, #8a4fe0, #c07bff); }
+#connection-hud.high #connection-bar {
+  border-color: rgba(200, 120, 255, 0.8);
+  box-shadow: 0 0 16px rgba(150, 70, 255, 0.5), inset 0 0 10px rgba(150, 70, 255, 0.25);
+}
+#connection-hud.high #connection-fill {
+  background: linear-gradient(90deg, #a24fe0, #e070ff);
+  animation: conn-throb 1.2s ease-in-out infinite;
+}
+#connection-hud.critical #connection-bar {
+  border-color: rgba(255, 110, 170, 0.95);
+  box-shadow: 0 0 26px rgba(255, 60, 130, 0.7), inset 0 0 14px rgba(255, 60, 130, 0.35);
+}
+#connection-hud.critical #connection-fill {
+  background: linear-gradient(90deg, #d63f9a, #ff5aa0);
+  animation: conn-throb 0.5s ease-in-out infinite;
+}
+#connection-hud.critical #connection-label,
+#connection-hud.critical #connection-pct { color: #ff9ec6; }
+@keyframes conn-throb { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.55); } }
+
+#connection-warning {
+  position: fixed; top: 48px; left: 50%; transform: translateX(-50%);
+  z-index: 10; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: #ff9ec6; font-weight: 700; white-space: nowrap;
+  text-shadow: 0 0 14px rgba(255, 60, 130, 0.85), 0 1px 3px rgba(0, 0, 0, 0.9);
+  animation: conn-warn 0.8s ease-in-out infinite;
+}
+@keyframes conn-warn { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+/* Eldritch full-screen vignette — opacity driven by Connection level (JS) */
+#connection-vignette {
+  position: fixed; inset: 0; z-index: 5; pointer-events: none; opacity: 0;
+  box-shadow: inset 0 0 200px 60px rgba(130, 30, 200, 0.7);
+  transition: opacity 0.5s ease;
+}
+#connection-vignette.critical { animation: conn-vig 0.7s ease-in-out infinite; }
+@keyframes conn-vig {
+  0%, 100% { box-shadow: inset 0 0 180px 50px rgba(150, 30, 150, 0.6); }
+  50% { box-shadow: inset 0 0 240px 80px rgba(220, 40, 120, 0.92); }
+}
+
+/* Death screen recoloured when the entity takes control (Connection failure) */
+#death-screen.signal .death-title { color: #d59cff; text-shadow: 0 0 22px rgba(160, 70, 255, 0.75); }
+#death-screen.signal .death-sub { color: #b98fe0; }
+
 /* Red damage vignette (flashes on hit) */
 #damage-vignette {
   position: fixed; inset: 0; z-index: 7; pointer-events: none;

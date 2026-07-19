@@ -181,6 +181,55 @@ export class Sfx {
 
   // ---- synth (no sample) ----------------------------------------------------
 
+  /** Stun impact — a sharp electric zap as the target seizes up. */
+  stunHit(): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    const osc = ac.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(880, t);
+    osc.frequency.exponentialRampToValueAtTime(160, t + 0.18);
+    const lfo = ac.createOscillator(); // buzzy tremolo for a "zap" texture
+    lfo.type = 'square';
+    lfo.frequency.setValueAtTime(60, t);
+    const lfoGain = ac.createGain();
+    lfoGain.gain.value = 40;
+    lfo.connect(lfoGain).connect(osc.frequency);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    osc.connect(g).connect(this.master);
+    osc.start(t);
+    lfo.start(t);
+    osc.stop(t + 0.24);
+    lfo.stop(t + 0.24);
+  }
+
+  /** Takeover complete — a rising shimmer/whoosh as you enter the new body. */
+  possess(): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.exponentialRampToValueAtTime(720, t + 0.35);
+    const filt = ac.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.frequency.setValueAtTime(300, t);
+    filt.frequency.exponentialRampToValueAtTime(2400, t + 0.35);
+    filt.Q.value = 6;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.32, t + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+    osc.connect(filt).connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.6);
+  }
+
   /** The host dies — a low synth groan into rumble. */
   death(): void {
     const ac = this.ac();

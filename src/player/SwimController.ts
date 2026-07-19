@@ -81,6 +81,23 @@ export class SwimController {
     this.lungeBoostT = 0.45;
   }
 
+  /**
+   * Reposition the host instantly and (optionally) face a direction — used by the
+   * possession dash, which drives the body directly while normal control is
+   * paused. Seeds the internal yaw/pitch so control resumes without a snap-turn.
+   */
+  warpTo(pos: Vector3, forward?: Vector3): void {
+    this.pos.copy(pos);
+    if (forward && forward.lengthSq() > 1e-6) {
+      TMP.copy(forward).normalize();
+      this.curYaw = Math.atan2(TMP.x, TMP.z);
+      this.curPitch = -Math.asin(Math.max(-1, Math.min(1, TMP.y)));
+    }
+    this.fish.object.position.copy(this.pos);
+    LOOK_E.set(this.curPitch, this.curYaw, 0);
+    this.fish.object.quaternion.setFromEuler(LOOK_E);
+  }
+
   /** Rebind to a new zone after descent and reposition at its spawn. */
   bindZone(terrain: TerrainLike, colliders: CylinderCollider[], bounds: ZoneBounds, spawn: Vector3): void {
     this.terrain = terrain;

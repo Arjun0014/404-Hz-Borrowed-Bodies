@@ -7,6 +7,7 @@ import type { Creature } from '../entities/Creature';
 import type { SwimController } from './SwimController';
 import type { PlayerCamera } from './PlayerCamera';
 import { EAT_SIZE_RATIO } from '../data/creatures';
+import { BITE_SIZE_EXP } from '../data/growth';
 
 const FWD = new Vector3();
 const ORIGIN = new Vector3();
@@ -16,9 +17,16 @@ const ORIGIN = new Vector3();
 const LUNGE_SPEED = 20; // forward burst — covers real distance (attack + escape)
 const ATTACK_WINDOW = 0.42; // seconds the jaws stay "live" during a lunge
 const ATTACK_CD = 2.0; // no rapid-fire clicking; one committed lunge at a time
-const BITE_DAMAGE = 34; // chips bigger creatures; a few lunges kills them
-const BITE_REACH = 5.5; // how far ahead of the snout the jaws snap
-const CONE_DOT = 0.42; // ~65° front cone — only what you face gets bitten
+// Bite damage of the starter (0.5 m) host; scales up with host length so a big
+// possessed body hits far harder.
+const BITE_BASE = 34;
+const BITE_REF_LEN = 0.5;
+// The jaws only reach a mouth-sized patch just ahead of the snout — sized to the
+// BODY, so a small fish bites a small patch and a big host reaches further. Kept
+// tight so you only ever bite what the lunge physically sweeps over (point 9).
+const REACH_PER_LEN = 0.9;
+const REACH_MOUTH = 0.25;
+const CONE_DOT = 0.6; // ~53° front cone — only what's dead ahead gets bitten
 
 /**
  * The host's attack: a committed forward LUNGE with a live bite window. Only the
@@ -40,9 +48,6 @@ export class PlayerCombat {
   onHit: () => void = () => {}; // took damage (screen shake)
   onFeed: (biomass: number) => void = () => {}; // ate/killed → grow
 
-  /** Bite damage multiplier from growth (1 at base size). */
-  biteScale = 1;
-
   private attackCd = 0;
   private attackActive = 0;
   private sinceHurt = 99;
@@ -60,7 +65,6 @@ export class PlayerCombat {
   ) {}
 
   reset(): void {
-    this.biteScale = 1;
     this.dead = false;
     this.attackCd = 0;
     this.attackActive = 0;
@@ -107,17 +111,19 @@ export class PlayerCombat {
   /** Check the front cone each frame the jaws are live (plows through schools). */
   private resolveBite(): void {
     this.controller.getForward(FWD);
-    ORIGIN.copy(this.controller.pos).addScaledVector(FWD, this.fish.length * 0.6);
-    // Reach and edible-prey size grow with the host; damage scales with growth.
+    ORIGIN.copy(this.controller.pos).addScaledVector(FWD, this.fish.length * 0.55);
+    // Reach + edible-prey size + bite damage all scale off the host's real body
+    // length — a small fish bites a small patch; a big host reaches and hits hard.
     const eatMax = this.fish.length / EAT_SIZE_RATIO;
-    const reach = Math.max(BITE_REACH, 3 + this.fish.length * 2.4);
+    const reach = this.fish.length * REACH_PER_LEN + REACH_MOUTH;
+    const damage = BITE_BASE * Math.pow(this.fish.length / BITE_REF_LEN, BITE_SIZE_EXP);
     const res = this.ecosystem.playerBiteCone(
       ORIGIN,
       FWD,
       reach,
       CONE_DOT,
       eatMax,
-      BITE_DAMAGE * this.biteScale,
+      damage,
       this.lungeHits,
     );
     if (res.hit > 0) {

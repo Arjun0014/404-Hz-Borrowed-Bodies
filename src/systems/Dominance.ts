@@ -27,6 +27,12 @@ const CLASS_CAP: Record<DomClass, number> = { weak: 30, medium: 95, strong: 280,
 const FIRST_KILL_BONUS = 2.5; // first defeat of a species this run is worth more
 const FALLOFF = 0.5; // per repeat of the same species → diminishing returns
 
+// Peer rank of each Dominance class. A creature is "at or below your standing" —
+// and so freely possessable at any health — once your rank index reaches it. So a
+// starting Drifter can already take same-tier weak fish (clownfish, fry, other
+// prey); foragers open up at Hunter, predators at Predator, apex at Abyssal.
+const CLASS_PEER_RANK: Record<DomClass, number> = { weak: 0, medium: 1, strong: 2, apex: 3 };
+
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
@@ -69,6 +75,16 @@ export class Dominance {
 
   get atMaxRank(): boolean {
     return this.rankIndex >= RANKS.length - 1;
+  }
+
+  /**
+   * True if this species' class sits below the player's current Dominance
+   * standing. Such creatures can be possessed at any health — no need to weaken
+   * them first — as the tangible payoff for ranking up.
+   */
+  canFreelyPossess(species: CreatureSpecies): boolean {
+    const { cls } = classify(species);
+    return this.rankIndex >= CLASS_PEER_RANK[cls];
   }
 
   /** 0..1 progress toward the next rank (1 at the final rank). */

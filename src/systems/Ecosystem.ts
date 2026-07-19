@@ -1,8 +1,9 @@
 import { Group, type Scene, Vector3 } from 'three';
 import { SpatialHash } from './SpatialHash';
 import { Creature, type EcoContext, type SchoolRef } from '../entities/Creature';
-import { CreatureFactory } from '../entities/CreatureFactory';
+import { CreatureFactory, type CreatureInstance } from '../entities/CreatureFactory';
 import { SPECIES, speciesById, type CreatureSpecies, type PopEntry } from '../data/creatures';
+import { lengthAt, rollWildGrowth } from '../data/growth';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { CylinderCollider, PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
 
@@ -17,21 +18,18 @@ export interface ZoneBinding {
   focus?: Vector3;
 }
 
-// Distance bands (m, from the player). The whole population is kept gathered
-// around the player by a soft "home pull", so almost everything sits inside the
-// visible bands; only AI + animation *cost* is throttled with distance, and
-// position always integrates every frame so nothing ever stutters.
+// Distance bands (m, from the player). Creatures live spread across the whole
+// shelf (they do NOT follow the player), so only those the player is near cost
+// full AI + animation; distant ones are throttled and eventually hidden. Position
+// always integrates every frame so nothing ever stutters when it re-enters view.
 const NEAR = 55;
 const MID = 100;
-const FAR = 155; // beyond this we stop rendering + animating (still drifts home)
+const FAR = 150; // beyond this we stop rendering + animating
 
-// Where dead/returning creatures reappear: a ring out in the murk around the
-// player, so they fade in and swim toward you rather than popping in close.
-const RING_MIN = 55;
-const RING_MAX = 115;
-// No creature spawns inside this radius of the player at zone load, so you get a
-// calm moment as the world swims in rather than materializing on top of you.
-const SPAWN_CLEAR = 34;
+// Radius kept clear of creatures around the player's spawn, and the seconds it
+// stays clear after taking control (issue: getting swarmed the instant you dive).
+const SPAWN_SAFE_R = 46;
+const SPAWN_SAFE_SECONDS = 30;
 
 // Growth biomass economy. Each bite tears a chunk worth BITE_CHUNK × the fish's
 // body length; finishing (killing/eating) it whole adds FINISH_BONUS × length.
@@ -45,6 +43,11 @@ interface School {
   ref: SchoolRef;
   wanderAngle: number;
   depthOffset: number;
+}
+
+/** Per-fish size around a shoal's shared base size, so a school reads coherent. */
+function schoolGrowth(ref: SchoolRef): number {
+  return Math.max(0, Math.min(1, ref.growth + (Math.random() - 0.5) * 0.14));
 }
 
 /**
@@ -73,6 +76,10 @@ export class Ecosystem {
   private colliders: CylinderCollider[] = [];
   private bounds: ZoneBounds | null = null;
   private area: PopulationArea | null = null;
+  // Spawn-safe bubble: creatures are repelled from it and cannot bite the player
+  // while it is active (a calm moment at the start of a zone).
+  private spawnSafeT = 0;
+  private readonly _spawnSafe = new Vector3();
 
   private readonly _playerPos = new Vector3();
   private readonly _biteVec = new Vector3();
@@ -96,7 +103,16 @@ export class Ecosystem {
       creatures: this.creatures,
       queryNeighbors: (x, z, r) => this.queryNeighbors(x, z, r),
       hitPlayer: (dmg) => this.onHitPlayer(dmg),
+      spawnSafeActive: false,
+      spawnSafe: this._spawnSafe,
+      spawnSafeR: SPAWN_SAFE_R,
     };
+  }
+
+  /** Keep a bubble around (x,z) clear of creatures for `seconds` (spawn grace). */
+  armSpawnSafe(x: number, z: number, seconds = SPAWN_SAFE_SECONDS): void {
+    this._spawnSafe.set(x, 0, z);
+    this.spawnSafeT = seconds;
   }
 
   /** Load every species model once (templates persist across zones). */
@@ -122,6 +138,9 @@ export class Ecosystem {
     if (b.area) {
       if (b.focus) this._playerPos.copy(b.focus);
       else this._playerPos.set((b.area.minX + b.area.maxX) / 2, 0, (b.area.minZ + b.area.maxZ) / 2);
+      // Keep the spawn clear until the player actually takes control; GameApp
+      // re-arms the real 30 s window on beginPlay/descent.
+      this.armSpawnSafe(this._playerPos.x, this._playerPos.z, 1e9);
       this.populate(b.population);
     }
   }
@@ -145,33 +164,34 @@ export class Ecosystem {
         let made = 0;
         while (made < entry.count) {
           const n = Math.min(entry.schoolSize, entry.count - made);
-          const school = this.newSchool(sp, SPAWN_CLEAR, RING_MAX);
+          const school = this.newSchool(sp);
           for (let i = 0; i < n; i++) {
             const x = school.ref.center.x + (Math.random() - 0.5) * 10;
             const z = school.ref.center.z + (Math.random() - 0.5) * 10;
-            const c = this.spawnAt(sp, x, z, school.ref.center.y, phase++);
+            const c = this.spawnAt(sp, x, z, school.ref.center.y, phase++, schoolGrowth(school.ref));
             c.school = school.ref;
             made++;
           }
         }
       } else {
+        // Solitary fish: scattered uniformly across the whole shelf.
         for (let i = 0; i < entry.count; i++) {
-          const s = this.ringSpot(SPAWN_CLEAR, RING_MAX);
+          const s = this.habitatSpot();
           const py = this.preferredYFor(sp, s.x, s.z);
-          this.spawnAt(sp, s.x, s.z, py, phase++);
+          this.spawnAt(sp, s.x, s.z, py, phase++, rollWildGrowth(sp.wildMaxGrowth));
         }
       }
     }
   }
 
-  private newSchool(sp: CreatureSpecies, rMin: number, rMax: number): School {
-    const s = this.ringSpot(rMin, rMax);
+  private newSchool(sp: CreatureSpecies): School {
+    const s = this.habitatSpot();
     const gy = this.terrain!.heightAt(s.x, s.z);
     const depthOffset = 5 + Math.random() * 12;
     const center = new Vector3(s.x, this.clampY(gy + depthOffset), s.z);
     const school: School = {
       species: sp,
-      ref: { center, vel: new Vector3() },
+      ref: { center, vel: new Vector3(), growth: rollWildGrowth(sp.wildMaxGrowth) },
       wanderAngle: Math.random() * Math.PI * 2,
       depthOffset,
     };
@@ -179,17 +199,23 @@ export class Ecosystem {
     return school;
   }
 
-  private spawnAt(sp: CreatureSpecies, x: number, z: number, y: number, phase: number): Creature {
+  private spawnAt(
+    sp: CreatureSpecies,
+    x: number,
+    z: number,
+    y: number,
+    phase: number,
+    growth01: number,
+  ): Creature {
     const inst = this.factory.createInstance(sp.id);
     this.group.add(inst.root);
     const c = new Creature(sp, inst);
     c.phase = phase % 6;
-    const lengthMul = 1 + (Math.random() * 2 - 1) * sp.sizeVar;
-    const len = sp.baseLength * lengthMul;
+    const len = lengthAt(sp.baseLength, growth01);
     const gy = this.terrain!.heightAt(x, z);
     const py = this.preferredYFor(sp, x, z);
     const spawnY = sp.role === 'crab' ? gy + len * 0.3 : Math.max(gy + len * 0.45 + 0.5, y);
-    c.spawn(x, spawnY, z, py, lengthMul);
+    c.spawn(x, spawnY, z, py, growth01);
     this.creatures.push(c);
     return c;
   }
@@ -211,14 +237,22 @@ export class Ecosystem {
     return Math.min(y, ceil);
   }
 
-  /** A point on a ring around the player, clamped to the shelf habitat. */
-  private ringSpot(rMin: number, rMax: number): { x: number; z: number } {
+  /** A uniform random point on the shelf, avoiding the active spawn-safe bubble. */
+  private habitatSpot(): { x: number; z: number } {
     const a = this.area!;
-    const ang = Math.random() * Math.PI * 2;
-    const r = rMin + Math.random() * (rMax - rMin);
-    const x = clamp(this._playerPos.x + Math.cos(ang) * r, a.minX, a.maxX);
-    const z = clamp(this._playerPos.z + Math.sin(ang) * r, a.minZ, a.maxZ);
-    return { x, z };
+    for (let tries = 0; tries < 8; tries++) {
+      const x = a.minX + Math.random() * (a.maxX - a.minX);
+      const z = a.minZ + Math.random() * (a.maxZ - a.minZ);
+      if (this.spawnSafeT > 0) {
+        const d = Math.hypot(x - this._spawnSafe.x, z - this._spawnSafe.z);
+        if (d < SPAWN_SAFE_R + 8) continue;
+      }
+      return { x, z };
+    }
+    return {
+      x: a.minX + Math.random() * (a.maxX - a.minX),
+      z: a.minZ + Math.random() * (a.maxZ - a.minZ),
+    };
   }
 
   private respawn(c: Creature): void {
@@ -226,24 +260,27 @@ export class Ecosystem {
     let x: number;
     let z: number;
     let py: number;
+    let growth01: number;
     if (c.school) {
-      // Rejoin the shoal so schools stay whole and replenish together.
+      // Rejoin the shoal so schools stay whole and replenish together, at the
+      // shoal's own size band.
       x = c.school.center.x + (Math.random() - 0.5) * 10;
       z = c.school.center.z + (Math.random() - 0.5) * 10;
       x = clamp(x, this.area.minX, this.area.maxX);
       z = clamp(z, this.area.minZ, this.area.maxZ);
       py = c.school.center.y;
+      growth01 = schoolGrowth(c.school);
     } else {
-      const s = this.ringSpot(RING_MIN, RING_MAX);
+      const s = this.habitatSpot();
       x = s.x;
       z = s.z;
       py = this.preferredYFor(c.species, x, z);
+      growth01 = rollWildGrowth(c.species.wildMaxGrowth);
     }
     const gy = this.terrain!.heightAt(x, z);
-    const lengthMul = 1 + (Math.random() * 2 - 1) * c.species.sizeVar;
-    const len = c.species.baseLength * lengthMul;
+    const len = lengthAt(c.species.baseLength, growth01);
     const y = c.species.role === 'crab' ? gy + len * 0.3 : Math.max(gy + len * 0.45 + 0.5, py);
-    c.spawn(x, y, z, py, lengthMul);
+    c.spawn(x, y, z, py, growth01);
   }
 
   // ---- per-frame update ----------------------------------------------------
@@ -257,6 +294,8 @@ export class Ecosystem {
     this.playerThreatT = Math.max(0, this.playerThreatT - dt);
     this.ctx.playerThreatT = this.playerThreatT;
     this.ctx.time += dt;
+    if (this.spawnSafeT > 0) this.spawnSafeT -= dt;
+    this.ctx.spawnSafeActive = this.spawnSafeT > 0;
 
     // Roam the shoals (staggered — a couple per frame is plenty).
     for (let i = 0; i < this.schools.length; i++) {
@@ -289,39 +328,40 @@ export class Ecosystem {
       } else if (d2 < FAR * FAR) {
         thinkStride = 10; animStride = 3; visible = true;
       } else {
-        thinkStride = 20; animStride = 0; visible = false; // hidden: still drifts home
+        thinkStride = 24; animStride = 0; visible = false; // far offscreen: cheap
       }
       c.inst.root.visible = visible;
 
       const f = this.frame + c.phase;
       if (f % thinkStride === 0) c.think(this.ctx, dt * thinkStride);
 
-      // Move every frame while visible (smooth); hidden creatures drift home
-      // slowly so they re-enter the bubble without any cost when unseen.
+      // Move every frame while visible (smooth). Far offscreen creatures barely
+      // move (they aren't seen) — enough to keep the world drifting, near-zero cost.
       if (visible) {
         c.move(this.ctx, dt);
         if (animStride > 0 && f % animStride === 0) c.animate(dt * animStride);
-      } else if (f % 3 === 0) {
-        c.move(this.ctx, dt * 3);
+      } else if (f % 8 === 0) {
+        c.move(this.ctx, dt * 8);
       }
     }
   }
 
-  /** Roam a shoal's centre, keep it near the player and on the shelf. */
+  /** Roam a shoal's centre freely across the shelf (it does NOT follow the player). */
   private updateSchool(s: School, dt: number): void {
     s.wanderAngle += (Math.random() - 0.5) * 0.8 * dt;
     const cruise = s.species.maxSpeed * 0.5;
     let vx = Math.sin(s.wanderAngle) * cruise;
     let vz = Math.cos(s.wanderAngle) * cruise;
 
-    // Home pull: keep the shoal gathered around the player.
-    const dx = this._playerPos.x - s.ref.center.x;
-    const dz = this._playerPos.z - s.ref.center.z;
-    const hd = Math.hypot(dx, dz);
-    if (hd > 65) {
-      const w = Math.min((hd - 65) / 45, 1.5);
-      vx += (dx / hd) * cruise * w * 1.8;
-      vz += (dz / hd) * cruise * w * 1.8;
+    // Steer the shoal away from the spawn-safe bubble while it is active.
+    if (this.spawnSafeT > 0) {
+      const dx = s.ref.center.x - this._spawnSafe.x;
+      const dz = s.ref.center.z - this._spawnSafe.z;
+      const d = Math.hypot(dx, dz);
+      if (d < SPAWN_SAFE_R + 14 && d > 1e-3) {
+        vx += (dx / d) * cruise * 2.2;
+        vz += (dz / d) * cruise * 2.2;
+      }
     }
 
     s.ref.vel.set(vx, 0, vz);
@@ -339,9 +379,18 @@ export class Ecosystem {
     s.ref.center.y += (targetY - s.ref.center.y) * Math.min(1, 2 * dt);
   }
 
-  /** Read-only view of the population (for HP-bar rendering). */
+  /** Read-only view of the population (for HP-bar rendering + possession targeting). */
   get list(): readonly Creature[] {
     return this.creatures;
+  }
+
+  /**
+   * Build a renderable body for a species so the player can wear it after
+   * possession (Phase 7). Reuses the already-loaded species template — no
+   * network load — and the caller owns/disposes the returned instance.
+   */
+  createHostInstance(speciesId: string): CreatureInstance {
+    return this.factory.createInstance(speciesId);
   }
 
   /**
@@ -379,6 +428,7 @@ export class Ecosystem {
           : 1;
       if (dot < minDot) continue; // behind / to the side — no bite
       alreadyHit.add(c);
+      c.provoke(); // the apex only retaliates against a host that attacks it
       hit++;
       const edible = c.species.role !== 'crab' && c.length <= eatMaxLen;
       const died = edible ? c.takeDamage(9999) : c.takeDamage(damage);

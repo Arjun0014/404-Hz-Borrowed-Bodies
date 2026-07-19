@@ -29,6 +29,11 @@ export class PlayerCamera {
   private readonly smoothPos = new Vector3();
   private initialized = false;
 
+  // Lock-on (hold right mouse): while set, the orbit rotates so this world point
+  // sits centered ahead of the host, and manual mouse-orbit is suspended.
+  private readonly lockPos = new Vector3();
+  private locked = false;
+
   // Zone-scoped references, swapped on descent.
   private terrain: TerrainLike;
   private colliders: CylinderCollider[];
@@ -64,12 +69,29 @@ export class PlayerCamera {
   }
 
   private computeBaseDist(): number {
-    return Math.max(this.profile.minDistance, this.hostLength * this.profile.distanceFactor);
+    // Distance grows with sqrt(length), not linearly — a big host fills much more
+    // of the screen (feels powerful) instead of shrinking into the distance.
+    return Math.max(this.profile.minDistance, this.profile.distanceFactor * Math.sqrt(this.hostLength));
   }
 
   /** Direction the player is aiming (camera forward), used for steering. */
   getAimDir(out: Vector3): Vector3 {
     return this.camera.getWorldDirection(out);
+  }
+
+  /** True while a lock-on target is active (drives the reticle + steering feel). */
+  get isLocked(): boolean {
+    return this.locked;
+  }
+
+  /** Set (or clear) the lock-on target — a live world position to keep centered. */
+  setLockTarget(pos: Vector3 | null): void {
+    if (pos) {
+      this.lockPos.copy(pos);
+      this.locked = true;
+    } else {
+      this.locked = false;
+    }
   }
 
   /** A transient FOV punch (a lunge/impact kick). Decays fast. */
@@ -82,14 +104,35 @@ export class PlayerCamera {
   }
 
   update(dt: number, targetPos: Vector3, targetVel: Vector3, speed01: number): void {
-    // Mouse orbit.
+    // Mouse orbit — suspended while locked on (the target owns the aim), though
+    // the wheel-zoom stays live and the deltas are still consumed each frame.
     const sens = 0.0022;
-    this.yaw -= this.input.mouseDX * sens;
-    this.pitch = MathUtils.clamp(this.pitch - this.input.mouseDY * sens, -1.25, 1.32);
+    if (!this.locked) {
+      this.yaw -= this.input.mouseDX * sens;
+      this.pitch = MathUtils.clamp(this.pitch - this.input.mouseDY * sens, -1.25, 1.32);
+    }
     if (this.input.wheelDelta !== 0) {
       this.zoomFactor = MathUtils.clamp(this.zoomFactor + this.input.wheelDelta * 0.0006, 0.6, 1.6);
     }
     this.input.clearMouse();
+
+    // Lock-on: swing the orbit so the target sits centered ahead of the host, so
+    // W-swim, the bite cone, and possession all line up on it. Camera sits behind
+    // the host on the host→target line (back vector points away from the target).
+    if (this.locked) {
+      TMP_A.subVectors(this.lockPos, targetPos);
+      const len = TMP_A.length();
+      if (len > 1e-3) {
+        const wantYaw = Math.atan2(-TMP_A.x, -TMP_A.z);
+        let dY = wantYaw - this.yaw;
+        while (dY > Math.PI) dY -= Math.PI * 2;
+        while (dY < -Math.PI) dY += Math.PI * 2;
+        const k = Math.min(1, 9 * dt);
+        this.yaw += dY * k;
+        const wantPitch = MathUtils.clamp(Math.asin(MathUtils.clamp(-TMP_A.y / len, -1, 1)), -1.0, 1.2);
+        this.pitch += (wantPitch - this.pitch) * k;
+      }
+    }
 
     // Desired position: behind the target on the yaw/pitch orbit sphere.
     const dist = this.baseDist * this.zoomFactor;

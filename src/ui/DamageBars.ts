@@ -11,7 +11,7 @@ const _v = new Vector3();
  */
 export class DamageBars {
   private readonly container: HTMLElement;
-  private readonly bars: { el: HTMLElement; fill: HTMLElement }[] = [];
+  private readonly bars: { el: HTMLElement; fill: HTMLElement; tag: HTMLElement }[] = [];
   private readonly candidates: { c: Creature; sx: number; sy: number; d: number }[] = [];
 
   constructor() {
@@ -27,10 +27,14 @@ export class DamageBars {
       el.className = 'dmg-bar';
       const fill = document.createElement('div');
       fill.className = 'dmg-fill';
+      const tag = document.createElement('div');
+      tag.className = 'dmg-tag';
+      tag.textContent = '◇ POSSESS';
       el.appendChild(fill);
+      el.appendChild(tag);
       el.style.display = 'none';
       this.container.appendChild(el);
-      this.bars.push({ el, fill });
+      this.bars.push({ el, fill, tag });
     }
   }
 
@@ -38,7 +42,8 @@ export class DamageBars {
     this.candidates.length = 0;
     for (let i = 0; i < creatures.length; i++) {
       const c = creatures[i];
-      if (!c.alive || c.hpBarTimer <= 0) continue;
+      // Show a bar while recently hurt, or as long as it stays possessable.
+      if (!c.alive || (c.hpBarTimer <= 0 && !c.stunReady)) continue;
       _v.copy(c.pos);
       _v.y += c.radius + 0.7;
       _v.project(camera);
@@ -60,8 +65,12 @@ export class DamageBars {
         b.el.style.display = 'block';
         b.el.style.left = `${sx}px`;
         b.el.style.top = `${sy}px`;
-        b.el.style.opacity = String(Math.min(1, c.hpBarTimer));
+        // Weakened enough to take over → glow + "POSSESS" tag (Phase 7).
+        const ready = c.stunReady;
+        b.el.style.opacity = String(ready ? 1 : Math.min(1, c.hpBarTimer));
         b.fill.style.width = `${Math.max(0, c.health01 * 100)}%`;
+        b.el.classList.toggle('stun', ready);
+        b.tag.style.display = ready ? 'block' : 'none';
       } else if (b.el.style.display !== 'none') {
         b.el.style.display = 'none';
       }

@@ -5,6 +5,8 @@ export class Input {
   mouseDX = 0;
   mouseDY = 0;
   wheelDelta = 0;
+  /** Right mouse button held (lock-on). */
+  rmbDown = false;
 
   onPointerLockChange: (locked: boolean) => void = () => {};
 
@@ -21,11 +23,17 @@ export class Input {
       this.keys.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.rmbDown = false;
+    });
 
     document.addEventListener('pointerlockchange', () => {
       this.pointerLocked = document.pointerLockElement === this.el;
-      if (!this.pointerLocked) this.keys.clear();
+      if (!this.pointerLocked) {
+        this.keys.clear();
+        this.rmbDown = false;
+      }
       this.onPointerLockChange(this.pointerLocked);
     });
 
@@ -40,10 +48,16 @@ export class Input {
     });
 
     // Left-click = attack (only while locked, so the click that grabs pointer
-    // lock or dismisses a menu never fires a bite).
+    // lock or dismisses a menu never fires a bite). Right-click held = lock-on.
     window.addEventListener('mousedown', (e) => {
       if (this.pointerLocked && e.button === 0) this.attackLatched = true;
+      if (e.button === 2) this.rmbDown = true;
     });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 2) this.rmbDown = false;
+    });
+    // Suppress the browser context menu so holding right-click never pops it.
+    window.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   /** True once per left-click; consumes the latch. */

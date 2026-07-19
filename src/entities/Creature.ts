@@ -1,6 +1,7 @@
 import { Euler, Vector3 } from 'three';
 import type { CreatureSpecies } from '../data/creatures';
 import { EAT_SIZE_RATIO, FORAGER_HUNT_THRESHOLD, HUNT_THRESHOLD } from '../data/creatures';
+import { biteScaleAt, healthAt, lengthAt, lengthRatio } from '../data/growth';
 import type { CreatureInstance } from './CreatureFactory';
 import type { CylinderCollider, PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
 
@@ -8,6 +9,8 @@ import type { CylinderCollider, PopulationArea, TerrainLike, ZoneBounds } from '
 export interface SchoolRef {
   center: Vector3;
   vel: Vector3;
+  /** Shared base size of the shoal, so members and respawns stay same-sized. */
+  growth: number;
 }
 
 /** Everything a creature needs from the ecosystem to think for one step. */
@@ -29,6 +32,10 @@ export interface EcoContext {
   queryNeighbors(x: number, z: number, radius: number): number[];
   /** A predator bit the player for `dmg`. */
   hitPlayer(dmg: number): void;
+  /** While true, creatures are repelled from `spawnSafe` and can't bite there. */
+  spawnSafeActive: boolean;
+  spawnSafe: Vector3;
+  spawnSafeR: number;
 }
 
 /** Bite damage a predator deals to the host, by role. */
@@ -70,11 +77,20 @@ export class Creature {
   readonly vel = new Vector3();
   length: number;
   radius: number;
+  /** Size scalar 0..1 (min size → species ceiling). Drives length, HP, and bite. */
+  growth01 = 0;
   alive = true;
   health = 1;
   maxHealth = 1;
   hunger = Math.random();
   state: CreatureState = 'wander';
+  /** Set each frame by the possession system: weakened enough to be taken over. */
+  stunReady = false;
+  /** Seconds left in a stun (frozen + dazed) — the possession window. */
+  stunT = 0;
+  /** Seconds the apex will retaliate against the player after being attacked by it.
+   *  Unprovoked, the shark ignores the host and just hunts other fish. */
+  provokedT = 0;
 
   /** This predator is currently going for the player. */
   private huntPlayer = false;
@@ -116,12 +132,16 @@ export class Creature {
     this.radius = species.baseLength * 0.45;
   }
 
-  spawn(x: number, y: number, z: number, preferredY: number, lengthMul = 1): void {
-    this.length = this.species.baseLength * lengthMul;
+  spawn(x: number, y: number, z: number, preferredY: number, growth01 = 0): void {
+    this.growth01 = growth01;
+    this.length = lengthAt(this.species.baseLength, growth01);
     this.radius = this.length * 0.45;
-    this.maxHealth = 8 + this.length * 16; // bigger creatures are tougher
+    this.maxHealth = healthAt(this.species.baseHealth, growth01); // HP tied to size
     this.health = this.maxHealth;
-    this.inst.root.scale.setScalar(lengthMul);
+    this.inst.root.scale.setScalar(lengthRatio(growth01));
+    this.stunReady = false;
+    this.stunT = 0;
+    this.provokedT = 0;
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.yaw = Math.random() * Math.PI * 2;
@@ -142,6 +162,19 @@ export class Creature {
     this.inst.root.position.copy(this.pos);
   }
 
+  /** The player attacked this creature — the apex retaliates for a while. */
+  provoke(seconds = 10): void {
+    this.provokedT = Math.max(this.provokedT, seconds);
+  }
+
+  /** Freeze the creature for a stun window (the possession takeover). */
+  stun(seconds: number): void {
+    this.stunT = seconds;
+    this.stunReady = false;
+    this.vel.set(0, 0, 0);
+    this.target = null;
+  }
+
   /** Take damage; returns true if this killed the creature. */
   takeDamage(dmg: number): boolean {
     if (!this.alive) return false;
@@ -158,6 +191,7 @@ export class Creature {
     this.alive = false;
     this.target = null;
     this.huntPlayer = false;
+    this.stunReady = false;
     this.inst.root.visible = false;
     this.respawnTimer = 3 + Math.random() * 5;
   }
@@ -165,6 +199,7 @@ export class Creature {
   // ---- think: decide a steering intent (throttled by distance) --------------
 
   think(ctx: EcoContext, dt: number): void {
+    if (this.stunT > 0) return; // dazed — no decisions while stunned
     if (this.species.role === 'crab') this.crabThink(ctx, dt);
     else this.fishThink(ctx, dt);
   }
@@ -221,8 +256,14 @@ export class Creature {
     // Distance to the host — a threat to flee, or (for predators) prey to hunt.
     _tmp.subVectors(this.pos, ctx.playerPos);
     const playerDist = _tmp.length();
+    // Normal predators hunt the host on sight. The apex (shark) does NOT — it
+    // minds its own business, hunting other fish, and only turns on the host once
+    // the host has attacked it (provokedT), then chases for a while.
     const canEatPlayer =
-      ctx.playerAlive && sp.role === 'predator' && this.length >= ctx.playerLength * EAT_SIZE_RATIO;
+      ctx.playerAlive &&
+      sp.role === 'predator' &&
+      this.length >= ctx.playerLength * EAT_SIZE_RATIO &&
+      (!sp.apex || this.provokedT > 0);
     // The host is a juicy target: hunted when close (<14 m) or nearly as near as
     // the closest fish prey, so lingering next to a predator gets you bitten even
     // in a crowd — but you're fast enough to dash away.
@@ -248,15 +289,16 @@ export class Creature {
     } else if (this.huntPlayer) {
       this.state = 'hunt';
       _tmp2.subVectors(ctx.playerPos, this.pos).normalize();
-      _desired.addScaledVector(_tmp2, 2.2);
-      // Slow down when closing so it can turn in and strike instead of orbiting.
-      boost = playerDist < 6 ? 0.6 : sp.apex ? 1.3 : 1.5;
+      // The apex commits hard and never brakes — a fast straight-line charge.
+      // Others ease in close so they can turn in and strike instead of orbiting.
+      _desired.addScaledVector(_tmp2, sp.apex ? 3.2 : 2.2);
+      boost = sp.apex ? 1.85 : playerDist < 6 ? 0.6 : 1.5;
     } else if (prey && preyDist < sp.senseRadius) {
       this.state = 'hunt';
       this.target = prey;
       _tmp2.subVectors(prey.pos, this.pos).normalize();
-      _desired.addScaledVector(_tmp2, 1.8);
-      boost = sp.apex ? 1.3 : 1.5;
+      _desired.addScaledVector(_tmp2, sp.apex ? 3.2 : 1.8);
+      boost = sp.apex ? 1.85 : 1.5; // shark barrels straight through at full tilt
     } else if (this.school) {
       this.state = 'school';
       // Strong pull to the shoal centre keeps the school coherent.
@@ -301,9 +343,23 @@ export class Creature {
       }
     }
 
+    // Stay out of the player's spawn-safe bubble at the start of a zone.
+    if (ctx.spawnSafeActive) {
+      _tmp.subVectors(this.pos, ctx.spawnSafe);
+      _tmp.y = 0;
+      const sd = _tmp.length();
+      const rr = ctx.spawnSafeR + 12;
+      if (sd < rr && sd > 1e-3) {
+        _desired.addScaledVector(_tmp, (2.6 * (1 - sd / rr)) / sd);
+        boost = Math.max(boost, 1.35);
+        if (this.huntPlayer) this.huntPlayer = false; // never chase into the safe zone
+      }
+    }
+
     // A committed hunter barrels through the crowd (light separation) so it can
     // actually reach its target instead of being held off at the crowd's edge.
-    if (sepN > 0) _desired.addScaledVector(_sep, this.huntPlayer ? 0.4 : 1.4);
+    // The apex ignores crowding entirely — it swims straight through the shoal.
+    if (sepN > 0) _desired.addScaledVector(_sep, this.huntPlayer || sp.apex ? 0.4 : 1.4);
     this.avoidTerrainAndObstacles(ctx);
     this.steerToHabitat(ctx.habitat);
 
@@ -314,9 +370,10 @@ export class Creature {
     this.hunger = Math.min(1, this.hunger + sp.hungerRate * dt);
   }
 
-  /** Predators/apex hunt above HUNT_THRESHOLD; foragers only when quite hungry. */
+  /** Predators hunt above HUNT_THRESHOLD; the apex always prowls; foragers rarely. */
   private wantsToHunt(): boolean {
     const r = this.species.role;
+    if (this.species.apex) return true; // the shark is always on the hunt
     if (r === 'predator') return this.hunger > HUNT_THRESHOLD;
     if (r === 'forager') return this.hunger > FORAGER_HUNT_THRESHOLD;
     return false;
@@ -375,8 +432,24 @@ export class Creature {
     this.jumpCd -= dt;
     this.hunger = Math.min(1, this.hunger + sp.hungerRate * dt);
 
+    // Scuttle out of the player's spawn-safe bubble and don't ambush from inside it.
+    let inSafe = false;
+    if (ctx.spawnSafeActive) {
+      const dx = this.pos.x - ctx.spawnSafe.x;
+      const dz = this.pos.z - ctx.spawnSafe.z;
+      const sd = Math.hypot(dx, dz);
+      if (sd < ctx.spawnSafeR + 12) {
+        inSafe = true;
+        if (sd > 1e-3) {
+          this.desiredDir.set(dx / sd, 0, dz / sd);
+          this.desiredSpeed = sp.maxSpeed;
+          return;
+        }
+      }
+    }
+
     // Ambush: launch at a fish passing low overhead.
-    if (this.jumpCd <= 0 && this.hunger > HUNT_THRESHOLD) {
+    if (!inSafe && this.jumpCd <= 0 && this.hunger > HUNT_THRESHOLD) {
       const reach = 8;
       const restY = ctx.terrain.heightAt(this.pos.x, this.pos.z) + this.length * 0.3;
       const ids = ctx.queryNeighbors(this.pos.x, this.pos.z, reach);
@@ -412,6 +485,17 @@ export class Creature {
   // ---- move: integrate physics every frame (smooth motion) ------------------
 
   move(ctx: EcoContext, dt: number): void {
+    if (this.stunT > 0) {
+      this.stunT -= dt;
+      this.vel.multiplyScalar(0.82); // bleed off momentum, hold roughly in place
+      this.pos.addScaledVector(this.vel, dt);
+      if (this.hpBarTimer > 0) this.hpBarTimer -= dt;
+      // Dazed wobble so a stunned target reads clearly as vulnerable.
+      LOOK.set(Math.sin(ctx.time * 22) * 0.35, this.yaw + ctx.time * 3, Math.sin(ctx.time * 17) * 0.25);
+      this.inst.root.quaternion.setFromEuler(LOOK);
+      this.inst.root.position.copy(this.pos);
+      return;
+    }
     if (this.species.role === 'crab') this.crabMove(ctx, dt);
     else this.fishMove(ctx, dt);
   }
@@ -431,41 +515,81 @@ export class Creature {
 
     this.resolveCollisions(ctx);
     this.tryEat();
+    if (this.species.apex) this.apexSweepEat(ctx); // devours anything in its path
     this.strikePlayer(ctx, dt);
     if (this.hpBarTimer > 0) this.hpBarTimer -= dt;
+    if (this.provokedT > 0) this.provokedT -= dt;
     this.orient(dt);
     this.inst.root.position.copy(this.pos);
   }
 
   /**
-   * A hunting predator lunges at the host and only lands damage from the FRONT
-   * during the lunge — no more side-touch damage. The strike is telegraphed (a
-   * committed forward burst) so it reads and can be dodged.
+   * Apex only: eat every edible creature the shark physically overlaps as it
+   * charges, not just its chosen target — so anything caught in its straight-line
+   * path is swallowed. (The player is damaged separately, via strikePlayer.)
+   */
+  private apexSweepEat(ctx: EcoContext): void {
+    const maw = this.radius + 2.2; // a wide swallowing gape ahead/around the head
+    const ids = ctx.queryNeighbors(this.pos.x, this.pos.z, maw + 3);
+    for (let i = 0; i < ids.length; i++) {
+      const o = ctx.creatures[ids[i]];
+      if (!o || o === this || !o.alive) continue;
+      if (this.pos.distanceTo(o.pos) < maw + o.radius && canEat(this, o)) {
+        o.die();
+        this.hunger = Math.max(0, this.hunger - 0.3);
+      }
+    }
+  }
+
+  /**
+   * A hunting predator lunges at the host and only lands damage with its MOUTH —
+   * the player must be in front of the head (heading cone) AND close to the
+   * snout. Brushing the body/side never hurts. Telegraphed forward burst so it
+   * reads and can be dodged.
    */
   private strikePlayer(ctx: EcoContext, dt: number): void {
     this.lungeCd -= dt;
     this.lungeT -= dt;
     if (!this.huntPlayer || !ctx.playerAlive) return;
+    // Never bite inside the spawn-safe bubble.
+    if (ctx.spawnSafeActive) {
+      const sdx = ctx.playerPos.x - ctx.spawnSafe.x;
+      const sdz = ctx.playerPos.z - ctx.spawnSafe.z;
+      if (Math.hypot(sdx, sdz) < ctx.spawnSafeR) return;
+    }
 
     _tmp.subVectors(ctx.playerPos, this.pos);
     const d = _tmp.length();
     if (d < 1e-3) return;
     _tmp.multiplyScalar(1 / d); // unit toward player
-    const spd = this.vel.length();
-    const facing = spd > 0.3 ? (this.vel.x * _tmp.x + this.vel.y * _tmp.y + this.vel.z * _tmp.z) / spd : 1;
 
-    // Begin a lunge when in range and roughly facing the host.
+    // The direction the head actually points (from yaw/pitch), not velocity.
+    const cp = Math.cos(this.pitch);
+    _tmp2.set(Math.sin(this.yaw) * cp, -Math.sin(this.pitch), Math.cos(this.yaw) * cp);
+    const headingDot = _tmp2.dot(_tmp); // player in front of the head?
+
+    // Begin a lunge when in range and the head is aimed at the host.
     const lungeRange = this.radius + ctx.playerLength + 4.5;
-    if (this.lungeCd <= 0 && d < lungeRange && facing > 0.35) {
-      this.vel.addScaledVector(_tmp, this.species.maxSpeed * 1.7);
+    if (this.lungeCd <= 0 && d < lungeRange && headingDot > 0.55) {
+      this.vel.addScaledVector(_tmp2, this.species.maxSpeed * 1.7);
       this.lungeT = 0.45;
       this.lungeCd = 1.8 + Math.random() * 0.8;
     }
 
-    // Damage only connects during the lunge, front-on, on contact.
-    const reach = this.radius + ctx.playerLength * 0.5 + 1.3;
-    if (this.lungeT > 0 && d < reach && facing > 0.25) {
-      ctx.hitPlayer(PLAYER_BITE_DAMAGE[this.species.id] ?? 8);
+    // Damage lands only from the MOUTH: the snout point must be within the host's
+    // body, and the host must sit in a tight front cone. Bigger predators bite harder.
+    const mouthX = this.pos.x + _tmp2.x * this.length * 0.55;
+    const mouthY = this.pos.y + _tmp2.y * this.length * 0.55;
+    const mouthZ = this.pos.z + _tmp2.z * this.length * 0.55;
+    const mouthDist = Math.hypot(
+      ctx.playerPos.x - mouthX,
+      ctx.playerPos.y - mouthY,
+      ctx.playerPos.z - mouthZ,
+    );
+    const gape = ctx.playerLength * 0.5 + this.length * 0.22 + 0.4;
+    if (this.lungeT > 0 && headingDot > 0.6 && mouthDist < gape) {
+      const base = PLAYER_BITE_DAMAGE[this.species.id] ?? 8;
+      ctx.hitPlayer(base * biteScaleAt(this.growth01));
       this.lungeT = 0;
       this.lungeCd = Math.max(this.lungeCd, 1.4);
       this.hunger = Math.max(0, this.hunger - 0.5);

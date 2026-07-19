@@ -1,5 +1,4 @@
 import {
-  AnimationAction,
   AnimationMixer,
   Box3,
   Group,
@@ -11,54 +10,48 @@ import {
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { SpeciesDef } from '../data/species';
+import { CreatureFactory, type CreatureInstance } from './CreatureFactory';
 
 /**
  * Visual representation of the player's current host.
- * `object` is the movement root (positioned/oriented by SwimController);
- * `modelRoot` carries banking roll and procedural sway so the camera
- * never inherits roll.
+ * `object` is the movement root (positioned/oriented by SwimController) and stays
+ * the SAME across possessions, so the camera never cuts — only the body inside
+ * `modelRoot` is swapped. `modelRoot` carries banking roll and procedural sway so
+ * the camera never inherits roll.
  */
 export class PlayerFish {
   readonly object = new Group();
   readonly modelRoot = new Group();
-  readonly species: SpeciesDef;
-  /** Body length at minimum (un-grown) size. */
-  readonly baseLength: number;
+  /** Mutable: possession swaps the host to any creature species. */
+  species: SpeciesDef;
+  /** Body length at minimum (un-grown) size for the current host. */
+  baseLength: number;
   /** Current body length in meters (baseLength × growth). */
   length: number;
   /** Turn agility multiplier (1 at min size, lower as the host grows). */
   agility = 1;
 
   private mixer: AnimationMixer | null = null;
-  private swimAction: AnimationAction | null = null;
+  /** The current body added to modelRoot, plus how to free it on the next swap. */
+  private modelHolder: Object3D | null = null;
+  private disposeCurrent: () => void = () => {};
   private bank = 0;
   private swayT = 0;
   private lungeT = 0;
 
   private constructor(species: SpeciesDef, gltf: GLTF) {
     this.species = species;
+    this.baseLength = species.baseLength;
+    this.length = species.baseLength;
     this.object.name = `host-${species.id}`;
     this.object.add(this.modelRoot);
+    this.installInitialModel(species, gltf);
+  }
 
+  /** Build + align the starter model (raw GLB) and mount it in modelRoot. */
+  private installInitialModel(species: SpeciesDef, gltf: GLTF): void {
     const model = gltf.scene;
-    model.traverse((o: Object3D) => {
-      const mesh = o as Mesh;
-      if (!mesh.isMesh) return;
-      // Skinned meshes can mis-report bounds; the player is always on screen.
-      mesh.frustumCulled = false;
-      // The GLB exports the body as alpha-blended (transparent + depthWrite off)
-      // even though it is a solid opaque body — that makes it wash out and look
-      // see-through against the bright water surface. Force it opaque so it
-      // writes depth and never goes translucent.
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const m of mats as Material[]) {
-        if (m && m.transparent) {
-          m.transparent = false;
-          m.depthWrite = true;
-          m.needsUpdate = true;
-        }
-      }
-    });
+    forceOpaque(model);
 
     // Auto-align: put the longest horizontal axis on Z (our forward), then
     // normalize the body length and center the pivot.
@@ -75,22 +68,51 @@ export class PlayerFish {
     wrapper.scale.setScalar(scale);
     const center = aligned.getCenter(new Vector3()).multiplyScalar(scale);
     wrapper.position.sub(center);
-    this.modelRoot.add(wrapper);
-    this.baseLength = species.baseLength;
-    this.length = species.baseLength;
 
+    this.modelRoot.add(wrapper);
+    this.modelHolder = wrapper;
+    this.disposeCurrent = () => disposeTree(wrapper);
+
+    this.mixer = null;
     if (gltf.animations.length > 0) {
       this.mixer = new AnimationMixer(model);
-      const clip =
-        gltf.animations.find((c) => /swim|idle/i.test(c.name)) ?? gltf.animations[0];
-      this.swimAction = this.mixer.clipAction(clip);
-      this.swimAction.play();
+      const clip = gltf.animations.find((c) => /swim|idle/i.test(c.name)) ?? gltf.animations[0];
+      this.mixer.clipAction(clip).play();
     }
   }
 
   static async create(loader: AssetLoader, species: SpeciesDef): Promise<PlayerFish> {
     const gltf = await loader.loadGLB(species.modelUrl);
     return new PlayerFish(species, gltf);
+  }
+
+  /**
+   * Possession: wear a new host body built from an already-aligned creature
+   * instance (its root is scaled to the species' min length, centered, and
+   * facing +Z). The movement `object` is unchanged, so the swap is seamless.
+   * Growth (object.scale) is re-applied by PlayerGrowth right after.
+   */
+  swapHost(species: SpeciesDef, inst: CreatureInstance): void {
+    if (this.modelHolder) this.modelRoot.remove(this.modelHolder);
+    this.disposeCurrent();
+
+    this.species = species;
+    this.baseLength = species.baseLength;
+    this.length = species.baseLength;
+    this.object.name = `host-${species.id}`;
+
+    inst.root.scale.setScalar(1); // growth is applied on this.object, not here
+    inst.root.position.set(0, 0, 0);
+    this.modelRoot.add(inst.root);
+    this.modelHolder = inst.root;
+    this.mixer = inst.mixer;
+    this.disposeCurrent = () => CreatureFactory.disposeInstance(inst);
+
+    // Reset transient visual state so the new body starts clean.
+    this.bank = 0;
+    this.lungeT = 0;
+    this.modelRoot.rotation.set(0, 0, 0);
+    this.modelRoot.scale.set(1, 1, 1);
   }
 
   /** Banking roll target (radians), set by the controller from turn rate. */
@@ -136,4 +158,35 @@ export class PlayerFish {
       this.modelRoot.scale.set(1, 1, 1);
     }
   }
+}
+
+/** GLB bodies are often exported alpha-blended; force them opaque. */
+function forceOpaque(root: Object3D): void {
+  root.traverse((o: Object3D) => {
+    const mesh = o as Mesh;
+    if (!mesh.isMesh) return;
+    mesh.frustumCulled = false;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of mats as Material[]) {
+      if (m && m.transparent) {
+        m.transparent = false;
+        m.depthWrite = true;
+        m.needsUpdate = true;
+      }
+    }
+  });
+}
+
+/** Free a self-owned model's GPU resources (used for the starter body on swap). */
+function disposeTree(root: Object3D): void {
+  root.traverse((o: Object3D) => {
+    const mesh = o as Mesh;
+    if (!mesh.isMesh) return;
+    mesh.geometry?.dispose();
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of mats as (Material & { map?: { dispose?: () => void } })[]) {
+      m?.map?.dispose?.();
+      m?.dispose?.();
+    }
+  });
 }

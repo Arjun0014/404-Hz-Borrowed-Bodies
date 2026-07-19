@@ -26,14 +26,25 @@ import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
 import { PlayerCombat } from '../player/PlayerCombat';
 import { PlayerGrowth } from '../player/PlayerGrowth';
+import { PlayerPossession } from '../player/PlayerPossession';
+import { PlayerResonance } from '../player/PlayerResonance';
 import { Dominance } from '../systems/Dominance';
 import { Sfx, AMBIENT } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
 import { SHALLOW_VEIL_POP } from '../data/creatures';
 import type { Zone } from '../world/types';
+import type { Creature } from '../entities/Creature';
 
 const TAIL_POS = new Vector3();
 const SPAWN = new Vector3();
+const LOCK_AIM = new Vector3();
+const LOCK_TO = new Vector3();
+const LOCK_PROJ = new Vector3();
+
+// Hold-RMB lock-on tuning.
+const LOCK_RANGE = 60; // max acquire distance
+const LOCK_KEEP_RANGE = 78; // sticky: hold a target a bit past acquire range
+const LOCK_CONE = 0.3; // target must be within this view-cone of the aim to acquire
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -60,11 +71,15 @@ export class GameApp {
   private flora!: Flora;
   private combat!: PlayerCombat;
   private growth!: PlayerGrowth;
+  private possession!: PlayerPossession;
+  private resonance!: PlayerResonance;
   private dominance!: Dominance;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
   private spawnGrace = 0;
+  /** Current hold-RMB lock-on target (null when not locked on). */
+  private lockedCreature: Creature | null = null;
 
   private started = false;
   private transitioning = false;
@@ -203,7 +218,14 @@ export class GameApp {
 
     // Growth: eating biomass grows the host toward its species ceiling.
     this.growth = new PlayerGrowth(this.fish, this.playerCamera, this.combat);
-    this.combat.onFeed = (biomass) => this.growth.feed(biomass);
+    // Resonance: a CHARACTER-level charge (survives host swaps) that eating fills
+    // and a possession spends. Same biomass a bite feeds growth also feeds it.
+    this.resonance = new PlayerResonance();
+    this.combat.onFeed = (biomass) => {
+      this.growth.feed(biomass);
+      this.resonance.feed(biomass);
+    };
+    this.resonance.onFull = () => this.showResonanceReady();
     this.growth.onStageUp = (name) => this.showStageToast(name);
 
     // Dominance: defeating creatures builds a persistent run-level rank.
@@ -212,6 +234,21 @@ export class GameApp {
     this.dominance.onRankUp = (name) => this.onDominanceRankUp(name);
     this.dominance.onWeakCapped = () =>
       this.showHint('Weak prey no longer raises Dominance — hunt bigger creatures.', 5);
+
+    // Possession: weaken a creature, then take over its body (Phase 7).
+    this.possession = new PlayerPossession(
+      this.ecosystem,
+      this.fish,
+      this.controller,
+      this.playerCamera,
+      this.growth,
+      this.combat,
+      this.dominance,
+      this.resonance,
+      this.input,
+      this.sfx,
+    );
+    this.possession.onPossessed = (name, speciesId) => this.onPossessed(name, speciesId);
 
     this.updateZoneTag();
 
@@ -231,9 +268,12 @@ export class GameApp {
       titleEl.classList.add('hidden');
       document.getElementById('health-hud')!.classList.remove('hidden');
       document.getElementById('dominance-hud')!.classList.remove('hidden');
+      document.getElementById('growth-hud')!.classList.remove('hidden');
+      document.getElementById('resonance-gauge')!.classList.remove('hidden');
       void this.sfx.load();
       this.updateZoneAmbient();
       this.spawnGrace = 3.5; // a calm moment before predators lock on
+      this.ecosystem.armSpawnSafe(this.controller.pos.x, this.controller.pos.z, 30);
       this.input.requestLock();
     };
     titleEl.addEventListener('click', beginPlay);
@@ -277,23 +317,33 @@ export class GameApp {
     const zone = this.zones.current;
 
     const dead = this.combat?.dead ?? false;
+    // Lock-on first, so possession can act on the currently targeted creature.
+    this.updateLockOn();
     if (!this.transitioning && this.started && !dead) {
-      this.controller.update(dt);
-      if (this.repelling) {
-        const done = this.zones.current.repelFromDescent(this.controller.pos, this.controller.vel, dt);
-        if (done) {
-          this.repelling = false;
-          this.promptDismissed = false;
+      // Possession only ever acts on the locked-on target; while a takeover
+      // channels, normal control is paused (the possession owns the body).
+      this.possession.update(dt, this.lockedCreature);
+      if (!this.possession.possessing) {
+        this.controller.update(dt);
+        if (this.repelling) {
+          const done = this.zones.current.repelFromDescent(this.controller.pos, this.controller.vel, dt);
+          if (done) {
+            this.repelling = false;
+            this.promptDismissed = false;
+          }
+        } else {
+          this.checkDescent();
         }
-      } else {
-        this.checkDescent();
       }
     }
+    const possessing = this.possession?.possessing ?? false;
 
     if (this.spawnGrace > 0) this.spawnGrace -= dt;
     // Predators may only hunt/bite the host once it is in control and past the
-    // post-spawn grace — no ambushes on the loading screen or the instant you dive.
-    const combatActive = this.started && !dead && !this.transitioning && this.spawnGrace <= 0;
+    // post-spawn grace — no ambushes on the loading screen, mid-possession, or the
+    // instant you dive.
+    const combatActive =
+      this.started && !dead && !this.transitioning && !possessing && this.spawnGrace <= 0;
 
     const speed = this.transitioning || dead ? 0 : this.controller.speed01;
     this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
@@ -302,10 +352,13 @@ export class GameApp {
     this.sfx.setSwim(dead ? 0 : this.controller.speed01, this.controller.dashOutput > 0.25);
     if (!this.transitioning) {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
-      if (this.started) this.combat.update(dt);
+      if (this.started && !possessing) this.combat.update(dt);
       this.updateCombatHud();
       this.updateGrowthHud();
+      this.updateResonanceHud();
       this.updateDominanceHud();
+      this.updatePossessHud();
+      this.updateLockReticle();
       this.damageBars.update(
         this.playerCamera.camera,
         this.ecosystem.list,
@@ -398,11 +451,42 @@ export class GameApp {
 
   private showStageToast(name: string): void {
     const el = document.getElementById('stage-toast')!;
-    el.classList.remove('dom');
+    el.classList.remove('dom', 'possess', 'resonance');
     el.textContent = this.growth.atCeiling ? `MAX GROWTH · ${name}` : `Grew · ${name}`;
     el.classList.remove('hidden');
     void el.offsetWidth; // restart the pop animation
     this.stageToastUntil = performance.now() + 2400;
+  }
+
+  // ---- resonance HUD (possession charge) ----------------------------------
+
+  private resonanceGaugeEl: HTMLElement | null = null;
+  private resonanceRingEl: HTMLElement | null = null;
+
+  private updateResonanceHud(): void {
+    if (!this.resonance || !this.started) return;
+    this.resonanceGaugeEl ||= document.getElementById('resonance-gauge');
+    this.resonanceRingEl ||= this.resonanceGaugeEl?.querySelector('.rg-ring') ?? null;
+    const full = this.resonance.isFull;
+    if (this.resonanceRingEl) {
+      this.resonanceRingEl.style.setProperty('--pct', String(Math.round(this.resonance.value01 * 100)));
+    }
+    if (this.resonanceGaugeEl) {
+      this.resonanceGaugeEl.classList.toggle('full', full);
+      // Pulse when you're aiming at a takeable fish but not yet charged.
+      this.resonanceGaugeEl.classList.toggle('needed', !full && (this.possession?.needsCharge ?? false));
+    }
+  }
+
+  private showResonanceReady(): void {
+    if (!this.started) return;
+    const el = document.getElementById('stage-toast')!;
+    el.classList.remove('dom', 'possess');
+    el.classList.add('resonance');
+    el.textContent = 'RESONANCE FULL · possession ready';
+    el.classList.remove('hidden');
+    void el.offsetWidth;
+    this.stageToastUntil = performance.now() + 2200;
   }
 
   // ---- dominance HUD -------------------------------------------------------
@@ -424,6 +508,7 @@ export class GameApp {
   private onDominanceRankUp(name: string): void {
     this.runState.save(); // persist milestone
     const el = document.getElementById('stage-toast')!;
+    el.classList.remove('possess', 'resonance');
     el.classList.add('dom');
     el.textContent = `Dominance ▸ ${name}`;
     el.classList.remove('hidden');
@@ -435,6 +520,134 @@ export class GameApp {
     hud.classList.add('rankup');
   }
 
+  // ---- possession HUD + takeover ------------------------------------------
+
+  private possessPromptEl: HTMLElement | null = null;
+  private possessNameEl: HTMLElement | null = null;
+  private possessTextEl: HTMLElement | null = null;
+  private possessFillEl: HTMLElement | null = null;
+
+  private updatePossessHud(): void {
+    this.possessPromptEl ||= document.getElementById('possess-prompt');
+    if (!this.possessPromptEl || !this.possession) return;
+    this.possessNameEl ||= this.possessPromptEl.querySelector('.pp-name');
+    this.possessTextEl ||= this.possessPromptEl.querySelector('.pp-text');
+    this.possessFillEl ||= this.possessPromptEl.querySelector('.pp-channel-fill');
+
+    const channeling = this.possession.possessing;
+    const chTarget = this.possession.channelTarget;
+    const best = !channeling && this.started ? this.possession.bestTarget : null;
+
+    if (channeling && chTarget) {
+      if (this.possessNameEl) this.possessNameEl.textContent = chTarget.species.displayName;
+      if (this.possessTextEl) this.possessTextEl.textContent = 'POSSESSING';
+      if (this.possessFillEl) this.possessFillEl.style.width = `${this.possession.channel01 * 100}%`;
+      this.possessPromptEl.classList.add('channeling');
+      this.possessPromptEl.classList.remove('hidden');
+    } else if (best) {
+      if (this.possessNameEl) this.possessNameEl.textContent = best.species.displayName;
+      if (this.possessTextEl) this.possessTextEl.textContent = 'HOLD TO POSSESS';
+      if (this.possessFillEl) this.possessFillEl.style.width = '0%';
+      this.possessPromptEl.classList.remove('channeling');
+      this.possessPromptEl.classList.remove('hidden');
+    } else {
+      this.possessPromptEl.classList.add('hidden');
+      this.possessPromptEl.classList.remove('channeling');
+    }
+  }
+
+  /** A takeover completed: adopt the new host, flash, toast, and persist it. */
+  private onPossessed(name: string, speciesId: string): void {
+    this.runState.data.hostSpeciesId = speciesId;
+    this.runState.save();
+    this.spawnGrace = 2.5; // a beat of peace to settle into the new body
+
+    const flash = document.getElementById('possess-flash');
+    if (flash) {
+      flash.classList.remove('flash');
+      void flash.offsetWidth;
+      flash.classList.add('flash');
+    }
+    document.getElementById('possess-prompt')?.classList.add('hidden');
+    document.getElementById('possess-prompt')?.classList.remove('channeling');
+
+    const el = document.getElementById('stage-toast')!;
+    el.classList.remove('dom', 'resonance');
+    el.classList.add('possess');
+    el.textContent = `Possessed · ${name}`;
+    el.classList.remove('hidden');
+    void el.offsetWidth;
+    this.stageToastUntil = performance.now() + 2600;
+  }
+
+  // ---- lock-on (hold right mouse) -----------------------------------------
+
+  private lockReticleEl: HTMLElement | null = null;
+
+  /** Acquire/hold a lock-on target while RMB is held and feed it to the camera. */
+  private updateLockOn(): void {
+    const active =
+      this.input.rmbDown && this.started && !(this.combat?.dead ?? false) && !this.transitioning;
+    if (!active) {
+      this.lockedCreature = null;
+      this.playerCamera.setLockTarget(null);
+      return;
+    }
+    // Sticky: keep the current target while it lives and stays within reach;
+    // otherwise acquire the best creature in view.
+    const cur = this.lockedCreature;
+    if (!cur || !cur.alive || cur.pos.distanceTo(this.controller.pos) > LOCK_KEEP_RANGE) {
+      this.lockedCreature = this.acquireLockTarget();
+    }
+    this.playerCamera.setLockTarget(this.lockedCreature ? this.lockedCreature.pos : null);
+  }
+
+  /** Pick the most on-screen, nearest living creature within the aim cone. */
+  private acquireLockTarget(): Creature | null {
+    const list = this.ecosystem?.list;
+    if (!list) return null;
+    this.playerCamera.getAimDir(LOCK_AIM);
+    const from = this.controller.pos;
+    let best: Creature | null = null;
+    let bestScore = -Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (!c.alive) continue;
+      LOCK_TO.subVectors(c.pos, from);
+      const d = LOCK_TO.length();
+      if (d < 1e-3 || d > LOCK_RANGE) continue;
+      const dot = (LOCK_AIM.x * LOCK_TO.x + LOCK_AIM.y * LOCK_TO.y + LOCK_AIM.z * LOCK_TO.z) / d;
+      if (dot < LOCK_CONE) continue; // must be roughly in front / in view
+      const score = dot * 1.5 - d / LOCK_RANGE; // most-centered + closest wins
+      if (score > bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  /** Position the on-screen lock reticle over the locked target (or hide it). */
+  private updateLockReticle(): void {
+    this.lockReticleEl ||= document.getElementById('lock-reticle');
+    const el = this.lockReticleEl;
+    if (!el) return;
+    const c = this.lockedCreature;
+    if (!c || !c.alive) {
+      el.classList.add('hidden');
+      return;
+    }
+    LOCK_PROJ.copy(c.pos).project(this.playerCamera.camera);
+    if (LOCK_PROJ.z > 1) {
+      el.classList.add('hidden'); // behind the camera
+      return;
+    }
+    const x = (LOCK_PROJ.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-LOCK_PROJ.y * 0.5 + 0.5) * window.innerHeight;
+    el.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
+    el.classList.remove('hidden');
+  }
+
   /** Loop the current zone's background ambience (Shallow Veil vs deeper). */
   private updateZoneAmbient(): void {
     const depth = this.runState.data.depth;
@@ -443,7 +656,12 @@ export class GameApp {
 
   private onHostDeath(): void {
     document.exitPointerLock?.();
+    this.possession?.reset();
+    this.lockedCreature = null;
+    this.playerCamera?.setLockTarget(null);
     this.damageBars.hideAll();
+    document.getElementById('lock-reticle')?.classList.add('hidden');
+    document.getElementById('possess-prompt')?.classList.add('hidden');
     document.getElementById('death-screen')!.classList.remove('hidden');
     document.getElementById('resume-chip')!.classList.add('hidden');
   }
@@ -529,6 +747,7 @@ export class GameApp {
     this.playerCamera.bindZone(next.terrain, next.colliders);
     this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
     this.bindEcosystem(next);
+    this.ecosystem.armSpawnSafe(SPAWN.x, SPAWN.z, 30);
     this.updateZoneAmbient();
     this.spawnGrace = 3.0; // brief peace after arriving in the new zone
     this.updateZoneTag();

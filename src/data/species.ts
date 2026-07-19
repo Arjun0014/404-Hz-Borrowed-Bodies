@@ -1,5 +1,7 @@
 import clownFishUrl from '../../assets/clown_fish_compressed.glb?url';
 import tunaFishUrl from '../../assets/tuna_fish_compressed.glb?url';
+import type { CreatureSpecies } from './creatures';
+import { PLAYER_HP_MULT } from './growth';
 
 export interface CameraProfile {
   /** Camera distance as a multiple of body length. */
@@ -22,17 +24,16 @@ export interface MovementDef {
   verticalFactor: number;
 }
 
-/** How a host species grows as it feeds (Phase 5). */
+/**
+ * How a host grows as it feeds (Phase 5+). The size range itself is universal
+ * (min → GROWTH_MAX_LENGTH× longer, see growth.ts); this only carries per-host
+ * toughness, how much biomass the full grind costs, and named stages.
+ */
 export interface GrowthDef {
-  /** Species growth ceiling in meters — biomass beyond this does nothing. */
-  ceilingLength: number;
-  /** Total biomass to grow from baseLength to ceilingLength. */
+  /** Max health at MINIMUM size. HP scales up with size (growth.ts healthAt). */
+  baseHealth: number;
+  /** Total biomass to grow from minimum size to the species ceiling. */
   biomassToCeiling: number;
-  /** Max health at minimum size and at the growth ceiling. */
-  maxHealthBase: number;
-  maxHealthCeiling: number;
-  /** Bite damage multiplier at the ceiling (1 at base). */
-  biteScaleCeiling: number;
   /** Named stages for feedback, as fractions of full growth (ascending). */
   stages: { at: number; name: string }[];
 }
@@ -41,7 +42,7 @@ export interface SpeciesDef {
   id: string;
   displayName: string;
   modelUrl: string;
-  /** Target body length in meters (model is auto-scaled to this). */
+  /** MINIMUM body length in meters (the un-grown size; model auto-scaled to this). */
   baseLength: number;
   /** Extra yaw applied after auto axis-alignment if the model faces backwards. */
   flipForward: boolean;
@@ -53,7 +54,7 @@ export interface SpeciesDef {
 /** Starter host. Uses the user-supplied clownfish asset (final art candidate). */
 export const DARTFISH: SpeciesDef = {
   id: 'dartfish',
-  displayName: 'Dartfish',
+  displayName: 'Clownfish',
   modelUrl: clownFishUrl,
   baseLength: 0.5,
   flipForward: false,
@@ -66,19 +67,18 @@ export const DARTFISH: SpeciesDef = {
     verticalFactor: 0.85,
   },
   camera: {
-    distanceFactor: 4.2,
+    // distanceFactor is now a sqrt(length) coefficient (see PlayerCamera).
+    distanceFactor: 3.0,
     minDistance: 1.6,
     heightFactor: 1.5,
     baseFov: 58,
   },
   growth: {
-    ceilingLength: 2.2, // ~4.4× the 0.5 m start — big for a dartfish, still small vs predators
-    // A long grind on fry alone (~140 fry); much faster if you risk biting bigger
-    // fish, whose chunks are worth far more (see BITE_CHUNK/FINISH_BONUS).
-    biomassToCeiling: 60,
-    maxHealthBase: 100,
-    maxHealthCeiling: 240,
-    biteScaleCeiling: 2.4,
+    // The player host is hardier than a wild clownfish (20 HP × PLAYER_HP_MULT).
+    baseHealth: 100,
+    // A real grind on small prey; much faster if you risk biting bigger fish,
+    // whose chunks are worth far more (see Ecosystem BITE_CHUNK/FINISH_BONUS).
+    biomassToCeiling: 70,
     stages: [
       { at: 0, name: 'Fry' },
       { at: 0.25, name: 'Juvenile' },
@@ -89,8 +89,7 @@ export const DARTFISH: SpeciesDef = {
 };
 
 /**
- * Registered for later phases (ambient neutral in Phase 3, possession target in
- * Phase 7). Not spawned in Phase 1.
+ * Registered for later phases. Kept in sync with the new GrowthDef shape.
  */
 export const TUNA: SpeciesDef = {
   id: 'tuna',
@@ -113,11 +112,8 @@ export const TUNA: SpeciesDef = {
     baseFov: 62,
   },
   growth: {
-    ceilingLength: 3.2,
-    biomassToCeiling: 90,
-    maxHealthBase: 200,
-    maxHealthCeiling: 460,
-    biteScaleCeiling: 2.2,
+    baseHealth: 200,
+    biomassToCeiling: 120,
     stages: [
       { at: 0, name: 'Young' },
       { at: 0.3, name: 'Adult' },
@@ -125,3 +121,46 @@ export const TUNA: SpeciesDef = {
     ],
   },
 };
+
+/** Generic size stages for a possessed wild host (no authored stage names). */
+const HOST_STAGES = [
+  { at: 0, name: 'Juvenile' },
+  { at: 0.35, name: 'Adult' },
+  { at: 0.75, name: 'Prime' },
+];
+
+/**
+ * Build a playable host profile from any ecosystem creature, so ANY fish can be
+ * possessed (Phase 7). Movement comes straight from the creature (a barracuda
+ * host is fast, a grouper heavy); camera and growth are derived from its size.
+ */
+export function hostProfileFromCreature(sp: CreatureSpecies): SpeciesDef {
+  const base = sp.baseLength;
+  return {
+    id: sp.id,
+    displayName: sp.displayName,
+    modelUrl: sp.modelUrl,
+    baseLength: base,
+    flipForward: sp.flipForward,
+    movement: {
+      maxSpeed: sp.maxSpeed,
+      dashMultiplier: 1.7,
+      accel: sp.accel,
+      drag: sp.drag,
+      turnRate: sp.turnRate,
+      verticalFactor: sp.role === 'crab' ? 0.5 : 0.75,
+    },
+    camera: {
+      // sqrt(length) coefficient (see PlayerCamera.computeBaseDist).
+      distanceFactor: 3.1,
+      minDistance: Math.max(1.6, base * 1.1),
+      heightFactor: 1.5,
+      baseFov: 60,
+    },
+    growth: {
+      baseHealth: sp.baseHealth * PLAYER_HP_MULT,
+      biomassToCeiling: 40 + base * 45,
+      stages: HOST_STAGES,
+    },
+  };
+}

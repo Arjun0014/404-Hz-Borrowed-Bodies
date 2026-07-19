@@ -112,6 +112,12 @@ html, body {
   0%, 100% { filter: none; }
   40% { filter: brightness(1.8) drop-shadow(0 0 8px rgba(159, 182, 255, 0.7)); }
 }
+
+/* Growth / size (host stage + length), top-left under Dominance */
+#growth-hud {
+  position: fixed; top: 74px; left: 16px; width: 190px; z-index: 8;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
 #stage-toast.dom { color: #bcd0ff; border-color: rgba(150, 175, 255, 0.5); text-shadow: 0 0 16px rgba(150, 175, 255, 0.4); }
 
 /* Descent confirmation */
@@ -225,6 +231,46 @@ html, body {
 #health-fill.low { background: linear-gradient(90deg, #ff5a4d, #ff9068); }
 #health-fill.fed { background: linear-gradient(90deg, #9dffb0, #e8ffa0); }
 
+/* Resonance — character-level possession charge, a radial gauge (fills by eating) */
+#resonance-gauge {
+  position: fixed; bottom: 40px; right: 28px; z-index: 8;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
+.rg-ring {
+  --pct: 0;
+  width: 58px; height: 58px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(closest-side, rgba(10, 4, 22, 0.88) 60%, transparent 62%),
+    conic-gradient(#7b4fff calc(var(--pct) * 1%), rgba(150, 120, 220, 0.14) 0);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+  transition: filter 0.3s, background 0.3s;
+}
+.rg-core {
+  font-size: 19px; color: #7a5bbf;
+  transition: color 0.3s, text-shadow 0.3s;
+}
+.rg-label {
+  font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: #c8a8ff; opacity: 0.7;
+}
+/* Fully charged → bright ring + glowing core (possession ready) */
+#resonance-gauge.full .rg-ring {
+  background:
+    radial-gradient(closest-side, rgba(10, 4, 22, 0.88) 60%, transparent 62%),
+    conic-gradient(from 0deg, #b892ff, #7de0ff, #b892ff);
+  filter: drop-shadow(0 0 9px rgba(150, 90, 255, 0.7));
+}
+#resonance-gauge.full .rg-core { color: #eafcff; text-shadow: 0 0 10px rgba(125, 224, 255, 0.9); }
+#resonance-gauge.full .rg-label { color: #d8f4ff; opacity: 0.95; }
+/* Aiming at a takeable fish but not charged yet → pulse red to say "go feed" */
+#resonance-gauge.needed .rg-ring { animation: rg-need 0.7s ease-in-out infinite; }
+@keyframes rg-need {
+  0%, 100% { filter: none; }
+  50% { filter: drop-shadow(0 0 9px rgba(255, 90, 90, 0.7)); }
+}
+
 /* Floating creature HP bars */
 #damage-bars { position: fixed; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
 .dmg-bar {
@@ -239,6 +285,105 @@ html, body {
   height: 100%; width: 100%;
   background: linear-gradient(90deg, #ff5a4d, #ffb347);
   transition: width 0.12s ease;
+}
+/* Weakened enough to possess (Phase 7) */
+.dmg-bar.stun {
+  border-color: rgba(196, 150, 255, 0.9);
+  box-shadow: 0 0 10px 1px rgba(170, 120, 255, 0.7);
+  animation: stun-pulse 0.9s ease-in-out infinite;
+}
+.dmg-bar.stun .dmg-fill { background: linear-gradient(90deg, #b892ff, #7de0ff); }
+.dmg-tag {
+  position: absolute; left: 50%; bottom: 9px; transform: translateX(-50%);
+  display: none; white-space: nowrap;
+  font-size: 9px; letter-spacing: 0.14em; font-weight: 700;
+  color: #d8c4ff; text-shadow: 0 0 8px rgba(150, 110, 255, 0.8), 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+@keyframes stun-pulse {
+  0%, 100% { box-shadow: 0 0 8px 1px rgba(170, 120, 255, 0.55); }
+  50% { box-shadow: 0 0 14px 3px rgba(190, 145, 255, 0.95); }
+}
+
+/* Lock-on reticle (hold right mouse) — positioned per-frame via inline transform */
+#lock-reticle {
+  position: fixed; top: 0; left: 0;
+  width: 40px; height: 40px;
+  z-index: 7; pointer-events: none;
+  border: 2px solid rgba(125, 238, 222, 0.85);
+  border-radius: 50%;
+  box-shadow: 0 0 12px rgba(125, 238, 222, 0.55), inset 0 0 8px rgba(125, 238, 222, 0.3);
+  animation: lock-pulse 1.1s ease-in-out infinite;
+}
+#lock-reticle::before {
+  content: ''; position: absolute; top: 50%; left: 50%;
+  width: 4px; height: 4px; margin: -2px 0 0 -2px;
+  background: rgba(190, 255, 248, 0.95); border-radius: 50%;
+  box-shadow: 0 0 6px rgba(125, 238, 222, 0.9);
+}
+@keyframes lock-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(125, 238, 222, 0.4), inset 0 0 6px rgba(125, 238, 222, 0.25); }
+  50% { box-shadow: 0 0 18px rgba(125, 238, 222, 0.85), inset 0 0 10px rgba(125, 238, 222, 0.5); }
+}
+
+/* Possession prompt (centered, above the host) */
+#possess-prompt {
+  position: fixed; top: 58%; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 18px; border-radius: 22px;
+  background: rgba(24, 10, 40, 0.72);
+  border: 1px solid rgba(190, 150, 255, 0.6);
+  box-shadow: 0 0 24px rgba(150, 90, 255, 0.35), inset 0 0 16px rgba(150, 90, 255, 0.12);
+  z-index: 9; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  animation: pp-bob 1.6s ease-in-out infinite;
+}
+#possess-prompt .pp-key {
+  font-size: 13px; font-weight: 800; letter-spacing: 0.08em;
+  color: #e6d4ff; padding: 2px 9px; border-radius: 6px;
+  background: rgba(150, 90, 255, 0.28); border: 1px solid rgba(200, 165, 255, 0.5);
+}
+#possess-prompt .pp-text { font-size: 12px; letter-spacing: 0.24em; color: #c8a8ff; }
+#possess-prompt .pp-name { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; color: #f0e6ff; }
+@keyframes pp-bob { 0%, 100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, -4px); } }
+
+/* Channel progress bar (hold-to-possess) */
+#possess-prompt .pp-channel {
+  width: 100%; height: 4px; margin-left: 4px; margin-right: 2px;
+  min-width: 60px; max-width: 120px;
+  background: rgba(10, 4, 26, 0.7); border-radius: 3px; overflow: hidden;
+  display: none;
+}
+#possess-prompt .pp-channel-fill {
+  width: 0%; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #b892ff, #7de0ff);
+  transition: width 0.05s linear;
+}
+/* While channeling: freeze the bob, brighten, reveal the progress bar */
+#possess-prompt.channeling {
+  animation: none;
+  border-color: rgba(220, 190, 255, 0.9);
+  box-shadow: 0 0 34px rgba(150, 90, 255, 0.6), inset 0 0 20px rgba(150, 90, 255, 0.2);
+}
+#possess-prompt.channeling .pp-channel { display: block; }
+#possess-prompt.channeling .pp-key { background: rgba(150, 90, 255, 0.5); }
+
+/* Possession takeover screen flash */
+#possess-flash {
+  position: fixed; inset: 0; z-index: 14; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse at 50% 55%, rgba(190, 150, 255, 0.5), rgba(90, 40, 180, 0) 62%);
+}
+#possess-flash.flash { animation: possess-flash 0.62s ease-out; }
+@keyframes possess-flash {
+  0% { opacity: 0; }
+  22% { opacity: 1; }
+  100% { opacity: 0; }
+}
+#stage-toast.possess {
+  color: #e2ccff; border-color: rgba(190, 150, 255, 0.65);
+  text-shadow: 0 0 16px rgba(180, 130, 255, 0.55);
+}
+#stage-toast.resonance {
+  color: #d8c4ff; border-color: rgba(160, 130, 255, 0.6);
+  text-shadow: 0 0 16px rgba(150, 90, 255, 0.5);
 }
 
 /* Red damage vignette (flashes on hit) */

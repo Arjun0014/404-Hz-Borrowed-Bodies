@@ -4,7 +4,6 @@ import {
   Mesh,
   MeshStandardMaterial,
   PlaneGeometry,
-  RepeatWrapping,
 } from 'three';
 import { WORLD } from '../config';
 import type { TerrainLike, TerrainMaps } from './types';
@@ -234,14 +233,29 @@ export class Terrain implements TerrainLike {
       metalness: 0,
     });
     if (maps) {
-      // 600 m plane, tile every ~5.5 m.
-      maps.map.wrapS = maps.map.wrapT = RepeatWrapping;
-      maps.map.repeat.set(110, 110);
-      maps.normalMap.wrapS = maps.normalMap.wrapT = RepeatWrapping;
-      maps.normalMap.repeat.set(110, 110);
+      // Repeat/wrap are configured by the owning zone (ShallowVeil); here we
+      // just bind the maps and set the material response.
       mat.map = maps.map;
       mat.normalMap = maps.normalMap;
       mat.normalScale.set(0.75, 0.75);
+      if (maps.armMap) {
+        // One ARM texture feeds all three data channels: R→AO, G→roughness,
+        // B→metalness. The scalar factors must be 1 so the map passes through
+        // unattenuated (roughness*=g, metalness*=b).
+        mat.aoMap = maps.armMap;
+        mat.roughnessMap = maps.armMap;
+        mat.metalnessMap = maps.armMap;
+        mat.roughness = 1;
+        mat.metalness = 1;
+      }
+      if (maps.displacementMap) {
+        // Subtle, low-frequency relief only. Collision uses the analytic
+        // heightfield, so keep the deviation tiny and centred on zero
+        // (bias = -scale/2) to preserve the terrain's overall shape.
+        mat.displacementMap = maps.displacementMap;
+        mat.displacementScale = 0.35;
+        mat.displacementBias = -0.175;
+      }
     }
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.uniforms.uTime;

@@ -18,6 +18,9 @@
     "@gltf-transform/functions": "^4.4.1",
     "@types/three": "^0.185.1",
     "draco3dgltf": "^1.5.7",
+    "jpeg-js": "^0.4.4",
+    "ktx2-encoder": "^0.5.4",
+    "pngjs": "^7.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.1.5"
   }

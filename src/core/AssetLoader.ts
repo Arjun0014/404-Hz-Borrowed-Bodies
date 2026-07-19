@@ -1,4 +1,4 @@
-import type { WebGLRenderer } from 'three';
+import type { Texture, WebGLRenderer } from 'three';
 import { LoadingManager } from 'three';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
@@ -26,6 +26,11 @@ export class AssetLoader {
 
   loadGLB(url: string): Promise<GLTF> {
     return this.gltf.loadAsync(url);
+  }
+
+  /** Load a standalone .ktx2 (Basis-transcoded) texture through the shared decoder. */
+  loadKTX2(url: string): Promise<Texture> {
+    return this.ktx2.loadAsync(url);
   }
 
   dispose(): void {

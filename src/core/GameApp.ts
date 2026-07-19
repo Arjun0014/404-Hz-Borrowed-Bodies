@@ -7,8 +7,17 @@ import {
   WebGLRenderer,
 } from 'three';
 import type { TerrainMaps } from '../world/types';
-import seabedDiffUrl from '../../assets/textures/coral_fort_wall_02/textures/coral_fort_wall_02_diff_1k.jpg';
-import seabedNorUrl from '../../assets/textures/coral_fort_wall_02/textures/coral_fort_wall_02_nor_gl_1k.jpg';
+// Seabed PBR set — Poly Haven "coast_sand_rocks_02" (CC0): diffuse, normal (GL),
+// ARM (AO/rough/metal), and displacement. Raw JPG/PNG sources; KTX2 variants are
+// swapped in via SEABED_ENCODING below once we've verified the source path.
+import seabedDiffUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_diff_1k.jpg';
+import seabedNorUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_nor_gl_1k.png';
+import seabedArmUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_arm_1k.png';
+import seabedDispUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_disp_1k.png';
+import seabedDiffKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_diff_1k.ktx2?url';
+import seabedNorKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_nor_gl_1k.ktx2?url';
+import seabedArmKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_arm_1k.ktx2?url';
+import seabedDispKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_disp_1k.ktx2?url';
 import { Loop } from './Loop';
 import { Input } from './Input';
 import { AssetLoader } from './AssetLoader';
@@ -46,6 +55,14 @@ const LOCK_PROJ = new Vector3();
 const LOCK_RANGE = 60; // max acquire distance
 const LOCK_KEEP_RANGE = 78; // sticky: hold a target a bit past acquire range
 const LOCK_CONE = 0.3; // target must be within this view-cone of the aim to acquire
+
+/**
+ * Seabed texture encoding. 'ktx2' loads GPU-compressed Basis/UASTC (~4x less
+ * VRAM, smaller on disk, no CPU image decode); 'image' loads the raw JPG/PNG
+ * sources. Kept switchable so the two can be A/B'd. Regenerate the KTX2 set
+ * after changing a source map: `node scripts/encode-ktx2.mjs`.
+ */
+const SEABED_ENCODING: 'ktx2' | 'image' = 'ktx2';
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -142,6 +159,31 @@ export class GameApp {
     });
   }
 
+  /** Load the shared seabed PBR maps (diffuse / normal / ARM / displacement). */
+  private async loadSeabedMaps(): Promise<TerrainMaps> {
+    const ktx2 = SEABED_ENCODING === 'ktx2';
+    const load = ktx2
+      ? (url: string) => this.loader.loadKTX2(url)
+      : (() => {
+          const l = new TextureLoader();
+          return (url: string) => l.loadAsync(url);
+        })();
+    const [map, normalMap, armMap, displacementMap] = await Promise.all([
+      load(ktx2 ? seabedDiffKtxUrl : seabedDiffUrl),
+      load(ktx2 ? seabedNorKtxUrl : seabedNorUrl),
+      load(ktx2 ? seabedArmKtxUrl : seabedArmUrl),
+      load(ktx2 ? seabedDispKtxUrl : seabedDispUrl),
+    ]);
+    // Diffuse is sRGB colour; normal/ARM/displacement are linear data maps.
+    // (KTX2 carries the transfer function in its DFD, but enforce it anyway.)
+    map.colorSpace = SRGBColorSpace;
+    const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    map.anisotropy = aniso;
+    normalMap.anisotropy = aniso;
+    armMap.anisotropy = aniso;
+    return { map, normalMap, armMap, displacementMap };
+  }
+
   async start(): Promise<void> {
     const loadingEl = document.getElementById('loading')!;
     const fillEl = document.getElementById('loading-fill')!;
@@ -149,20 +191,11 @@ export class GameApp {
       fillEl.style.width = `${Math.round((l / Math.max(t, 1)) * 100)}%`;
     };
 
-    // Seabed texture set (Poly Haven coral_fort_wall_02, CC0). Non-fatal if it
+    // Seabed PBR set (Poly Haven coast_sand_rocks_02, CC0). Non-fatal if it
     // fails to load: zones fall back to their vertex-colour palettes.
     let maps: TerrainMaps | undefined;
     try {
-      const texLoader = new TextureLoader();
-      const [map, normalMap] = await Promise.all([
-        texLoader.loadAsync(seabedDiffUrl),
-        texLoader.loadAsync(seabedNorUrl),
-      ]);
-      map.colorSpace = SRGBColorSpace;
-      const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
-      map.anisotropy = aniso;
-      normalMap.anisotropy = aniso;
-      maps = { map, normalMap };
+      maps = await this.loadSeabedMaps();
     } catch (err) {
       console.warn('[404hz] seabed textures failed to load, using fallback palette', err);
     }

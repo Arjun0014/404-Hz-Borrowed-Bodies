@@ -12,6 +12,10 @@ export interface CylinderCollider {
 export interface TerrainMaps {
   map: Texture;
   normalMap: Texture;
+  /** Combined AO(R)/Roughness(G)/Metalness(B); assigned to all three slots. */
+  armMap?: Texture;
+  /** Height map driving subtle, low-frequency vertex displacement. */
+  displacementMap?: Texture;
 }
 
 /** Anything the movement/camera code can query for ground height. */

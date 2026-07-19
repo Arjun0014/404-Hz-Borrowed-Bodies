@@ -117,22 +117,28 @@ export class ShallowVeil implements Zone {
     if (maps) {
       // Clone from the shared base so this zone owns (and disposes) its own
       // texture objects with their own repeat/wrap — the base survives.
-      const tMap = maps.map.clone();
-      tMap.wrapS = tMap.wrapT = RepeatWrapping;
-      tMap.repeat.set(110, 110);
-      tMap.needsUpdate = true;
-      const tNor = maps.normalMap.clone();
-      tNor.wrapS = tNor.wrapT = RepeatWrapping;
-      tNor.repeat.set(110, 110);
-      tNor.needsUpdate = true;
-      terrainMaps = { map: tMap, normalMap: tNor };
+      // Colour/normal/ARM tile densely across the shelf; displacement is broad
+      // and low-frequency so the 300-seg mesh can resolve it as gentle relief
+      // (fine tiling would alias into vertex spikes).
+      const TILE = 110;
+      const DISP_TILE = 22;
+      const tile = (src: Texture, n: number): Texture => {
+        const t = src.clone();
+        t.wrapS = t.wrapT = RepeatWrapping;
+        t.repeat.set(n, n);
+        t.needsUpdate = true;
+        this.disposables.push(t);
+        return t;
+      };
+      terrainMaps = { map: tile(maps.map, TILE), normalMap: tile(maps.normalMap, TILE) };
+      if (maps.armMap) terrainMaps.armMap = tile(maps.armMap, TILE);
+      if (maps.displacementMap) terrainMaps.displacementMap = tile(maps.displacementMap, DISP_TILE);
 
       this.rockTexture = maps.map.clone();
       this.rockTexture.wrapS = this.rockTexture.wrapT = RepeatWrapping;
       this.rockTexture.repeat.set(2.5, 2);
       this.rockTexture.needsUpdate = true;
-
-      this.disposables.push(tMap, tNor, this.rockTexture);
+      this.disposables.push(this.rockTexture);
     }
 
     this.group.add(this.terrain.build(terrainMaps));

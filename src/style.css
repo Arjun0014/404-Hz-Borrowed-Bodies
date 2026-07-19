@@ -456,27 +456,30 @@ html, body {
 }
 @keyframes conn-warn { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 
-/* Eldritch full-screen vignette — opacity driven by Connection level (JS) */
+/* Eldritch full-screen vignette — opacity driven by Connection level (JS).
+   A radial-gradient background (painted once, GPU-composited) instead of a big
+   blurred box-shadow, so per-frame opacity changes cost nothing to repaint. */
 #connection-vignette {
   position: fixed; inset: 0; z-index: 5; pointer-events: none; opacity: 0;
-  box-shadow: inset 0 0 200px 60px rgba(130, 30, 200, 0.7);
-  transition: opacity 0.5s ease;
+  background: radial-gradient(ellipse at center, transparent 42%, rgba(130, 30, 200, 0.62) 100%);
+  will-change: opacity;
 }
-#connection-vignette.critical { animation: conn-vig 0.7s ease-in-out infinite; }
-@keyframes conn-vig {
-  0%, 100% { box-shadow: inset 0 0 180px 50px rgba(150, 30, 150, 0.6); }
-  50% { box-shadow: inset 0 0 240px 80px rgba(220, 40, 120, 0.92); }
+#connection-vignette.critical {
+  background: radial-gradient(ellipse at center, transparent 38%, rgba(220, 40, 120, 0.74) 100%);
+  animation: conn-vig-pulse 0.7s ease-in-out infinite; /* opacity-only: compositor-cheap */
 }
+@keyframes conn-vig-pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 0.95; } }
 
 /* Death screen recoloured when the entity takes control (Connection failure) */
 #death-screen.signal .death-title { color: #d59cff; text-shadow: 0 0 22px rgba(160, 70, 255, 0.75); }
 #death-screen.signal .death-sub { color: #b98fe0; }
 
-/* Red damage vignette (flashes on hit) */
+/* Red damage vignette (flashes on hit) — radial-gradient, GPU-composited. */
 #damage-vignette {
   position: fixed; inset: 0; z-index: 7; pointer-events: none;
   opacity: 0;
-  box-shadow: inset 0 0 160px 40px rgba(200, 20, 30, 0.85);
+  background: radial-gradient(ellipse at center, transparent 46%, rgba(200, 20, 30, 0.9) 100%);
+  will-change: opacity;
   transition: opacity 0.12s ease;
 }
 

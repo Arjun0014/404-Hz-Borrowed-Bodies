@@ -481,14 +481,19 @@ export class GameApp {
 
   private resonanceGaugeEl: HTMLElement | null = null;
   private resonanceRingEl: HTMLElement | null = null;
+  private resonancePct = -1;
 
   private updateResonanceHud(): void {
     if (!this.resonance || !this.started) return;
     this.resonanceGaugeEl ||= document.getElementById('resonance-gauge');
     this.resonanceRingEl ||= this.resonanceGaugeEl?.querySelector('.rg-ring') ?? null;
     const full = this.resonance.isFull;
-    if (this.resonanceRingEl) {
-      this.resonanceRingEl.style.setProperty('--pct', String(Math.round(this.resonance.value01 * 100)));
+    // Only repaint the conic-gradient ring on an integer-% change (it now ticks
+    // passively every frame, so guard the write).
+    const pct = Math.round(this.resonance.value01 * 100);
+    if (this.resonanceRingEl && pct !== this.resonancePct) {
+      this.resonancePct = pct;
+      this.resonanceRingEl.style.setProperty('--pct', String(pct));
     }
     if (this.resonanceGaugeEl) {
       this.resonanceGaugeEl.classList.toggle('full', full);
@@ -516,6 +521,10 @@ export class GameApp {
   private connWarnEl: HTMLElement | null = null;
   private connVigEl: HTMLElement | null = null;
   private connBeatT = 0;
+  // Cached last-written HUD values, so the DOM is only touched on a real change.
+  private connPct = -1;
+  private connTierKey = '';
+  private connVig = -1;
 
   /** Rise Connection, then drive its HUD bar, warning, vignette, and dread audio. */
   private updateConnection(dt: number, dead: boolean): void {
@@ -536,20 +545,42 @@ export class GameApp {
     this.connWarnEl ||= document.getElementById('connection-warning');
     this.connVigEl ||= document.getElementById('connection-vignette');
 
-    if (this.connFillEl) this.connFillEl.style.width = `${lvl * 100}%`;
-    if (this.connPctEl) this.connPctEl.textContent = `${Math.round(lvl * 100)}%`;
-    if (this.connHudEl) {
-      this.connHudEl.classList.toggle('rising', tier === 'rising');
-      this.connHudEl.classList.toggle('high', tier === 'high');
-      this.connHudEl.classList.toggle('critical', tier === 'critical');
-    }
-    this.connWarnEl?.classList.toggle('hidden', tier !== 'critical' || dead);
+    const crit = tier === 'critical' && !dead;
 
-    // Eldritch vignette — creeps in from ~40%, pulses at critical.
-    if (this.connVigEl) {
+    // Bar + %: only rewrite on an integer-% change (not all 60 frames a second).
+    const pct = Math.round(lvl * 100);
+    if (pct !== this.connPct) {
+      this.connPct = pct;
+      if (this.connFillEl) this.connFillEl.style.width = `${pct}%`;
+      if (this.connPctEl) this.connPctEl.textContent = `${pct}%`;
+    }
+
+    // Tier classes + warning + vignette state: only on a tier/dead change.
+    const tierKey = dead ? 'dead' : tier;
+    if (tierKey !== this.connTierKey) {
+      this.connTierKey = tierKey;
+      if (this.connHudEl) {
+        this.connHudEl.classList.toggle('rising', !dead && tier === 'rising');
+        this.connHudEl.classList.toggle('high', !dead && tier === 'high');
+        this.connHudEl.classList.toggle('critical', crit);
+      }
+      this.connWarnEl?.classList.toggle('hidden', !crit);
+      this.connVigEl?.classList.toggle('critical', crit);
+      // At critical the pulse animation owns the vignette opacity; clear inline so
+      // it takes over, and force a re-write when we later drop out of critical.
+      if (crit && this.connVigEl) this.connVigEl.style.opacity = '';
+      this.connVig = -1;
+    }
+
+    // Eldritch vignette opacity — creeps in from ~40% (skipped while critical,
+    // where the CSS pulse drives it), rewritten only on a real change.
+    if (this.connVigEl && !crit) {
       const vig = dead ? 0 : Math.max(0, (lvl - 0.4) / 0.6) * 0.85;
-      this.connVigEl.style.opacity = String(vig);
-      this.connVigEl.classList.toggle('critical', tier === 'critical' && !dead);
+      const vigR = Math.round(vig * 100);
+      if (vigR !== this.connVig) {
+        this.connVig = vigR;
+        this.connVigEl.style.opacity = String(vig);
+      }
     }
 
     // Dread audio: a swelling drone + a heartbeat, both only from the "high" band

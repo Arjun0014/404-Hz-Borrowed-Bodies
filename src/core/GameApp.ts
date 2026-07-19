@@ -249,6 +249,7 @@ export class GameApp {
       this.sfx,
     );
     this.possession.onPossessed = (name, speciesId) => this.onPossessed(name, speciesId);
+    this.possession.onRiskResult = (success, name) => this.onRiskResult(success, name);
 
     this.updateZoneTag();
 
@@ -451,7 +452,7 @@ export class GameApp {
 
   private showStageToast(name: string): void {
     const el = document.getElementById('stage-toast')!;
-    el.classList.remove('dom', 'possess', 'resonance');
+    el.classList.remove('dom', 'possess', 'resonance', 'fail');
     el.textContent = this.growth.atCeiling ? `MAX GROWTH · ${name}` : `Grew · ${name}`;
     el.classList.remove('hidden');
     void el.offsetWidth; // restart the pop animation
@@ -481,7 +482,7 @@ export class GameApp {
   private showResonanceReady(): void {
     if (!this.started) return;
     const el = document.getElementById('stage-toast')!;
-    el.classList.remove('dom', 'possess');
+    el.classList.remove('dom', 'possess', 'fail');
     el.classList.add('resonance');
     el.textContent = 'RESONANCE FULL · possession ready';
     el.classList.remove('hidden');
@@ -508,7 +509,7 @@ export class GameApp {
   private onDominanceRankUp(name: string): void {
     this.runState.save(); // persist milestone
     const el = document.getElementById('stage-toast')!;
-    el.classList.remove('possess', 'resonance');
+    el.classList.remove('possess', 'resonance', 'fail');
     el.classList.add('dom');
     el.textContent = `Dominance ▸ ${name}`;
     el.classList.remove('hidden');
@@ -524,36 +525,69 @@ export class GameApp {
 
   private possessPromptEl: HTMLElement | null = null;
   private possessNameEl: HTMLElement | null = null;
-  private possessTextEl: HTMLElement | null = null;
+  private possessGuaranteedEl: HTMLElement | null = null;
+  private possessRiskEl: HTMLElement | null = null;
+  private possessPctEl: HTMLElement | null = null;
   private possessFillEl: HTMLElement | null = null;
 
   private updatePossessHud(): void {
     this.possessPromptEl ||= document.getElementById('possess-prompt');
     if (!this.possessPromptEl || !this.possession) return;
     this.possessNameEl ||= this.possessPromptEl.querySelector('.pp-name');
-    this.possessTextEl ||= this.possessPromptEl.querySelector('.pp-text');
+    this.possessGuaranteedEl ||= this.possessPromptEl.querySelector('.pp-guaranteed');
+    this.possessRiskEl ||= this.possessPromptEl.querySelector('.pp-risk');
+    this.possessPctEl ||= this.possessPromptEl.querySelector('.pp-pct');
     this.possessFillEl ||= this.possessPromptEl.querySelector('.pp-channel-fill');
 
-    const channeling = this.possession.possessing;
-    const chTarget = this.possession.channelTarget;
-    const best = !channeling && this.started ? this.possession.bestTarget : null;
+    const p = this.possession;
+    const channeling = p.possessing;
+    const chTarget = p.channelTarget;
+    // Risk target (any locked, charged, in-range creature) drives the prompt when
+    // not channeling; the guaranteed line only shows for eligible targets.
+    const risk = !channeling && this.started ? p.riskTarget : null;
+    const el = this.possessPromptEl;
 
     if (channeling && chTarget) {
       if (this.possessNameEl) this.possessNameEl.textContent = chTarget.species.displayName;
-      if (this.possessTextEl) this.possessTextEl.textContent = 'POSSESSING';
-      if (this.possessFillEl) this.possessFillEl.style.width = `${this.possession.channel01 * 100}%`;
-      this.possessPromptEl.classList.add('channeling');
-      this.possessPromptEl.classList.remove('hidden');
-    } else if (best) {
-      if (this.possessNameEl) this.possessNameEl.textContent = best.species.displayName;
-      if (this.possessTextEl) this.possessTextEl.textContent = 'HOLD TO POSSESS';
-      if (this.possessFillEl) this.possessFillEl.style.width = '0%';
-      this.possessPromptEl.classList.remove('channeling');
-      this.possessPromptEl.classList.remove('hidden');
+      if (this.possessFillEl) this.possessFillEl.style.width = `${p.channel01 * 100}%`;
+      el.classList.add('channeling');
+      el.classList.remove('hidden');
+    } else if (risk) {
+      if (this.possessNameEl) this.possessNameEl.textContent = risk.species.displayName;
+      // Guaranteed hold shown only when the target is actually eligible.
+      this.possessGuaranteedEl?.classList.toggle('hidden', !p.bestTarget);
+      const pct = Math.round(p.riskChance01 * 100);
+      if (this.possessPctEl) this.possessPctEl.textContent = `${pct}%`;
+      if (this.possessRiskEl) {
+        // Colour the odds: green (safe) → amber → red (long shot).
+        this.possessRiskEl.classList.toggle('good', pct >= 66);
+        this.possessRiskEl.classList.toggle('fair', pct >= 33 && pct < 66);
+        this.possessRiskEl.classList.toggle('poor', pct < 33);
+      }
+      el.classList.remove('channeling');
+      el.classList.remove('hidden');
     } else {
-      this.possessPromptEl.classList.add('hidden');
-      this.possessPromptEl.classList.remove('channeling');
+      el.classList.add('hidden');
+      el.classList.remove('channeling');
     }
+  }
+
+  /** A risk-snatch resolved — flash + toast the outcome. */
+  private onRiskResult(success: boolean, name: string): void {
+    if (success) return; // the possess flow (onPossessed) already handles success
+    const flash = document.getElementById('possess-flash');
+    if (flash) {
+      flash.classList.remove('flash', 'fail');
+      void flash.offsetWidth;
+      flash.classList.add('flash', 'fail'); // red failure jolt
+    }
+    const el = document.getElementById('stage-toast')!;
+    el.classList.remove('dom', 'resonance', 'possess');
+    el.classList.add('fail');
+    el.textContent = `Snatch failed · ${name} slips free`;
+    el.classList.remove('hidden');
+    void el.offsetWidth;
+    this.stageToastUntil = performance.now() + 2200;
   }
 
   /** A takeover completed: adopt the new host, flash, toast, and persist it. */
@@ -564,7 +598,7 @@ export class GameApp {
 
     const flash = document.getElementById('possess-flash');
     if (flash) {
-      flash.classList.remove('flash');
+      flash.classList.remove('flash', 'fail');
       void flash.offsetWidth;
       flash.classList.add('flash');
     }
@@ -572,7 +606,7 @@ export class GameApp {
     document.getElementById('possess-prompt')?.classList.remove('channeling');
 
     const el = document.getElementById('stage-toast')!;
-    el.classList.remove('dom', 'resonance');
+    el.classList.remove('dom', 'resonance', 'fail');
     el.classList.add('possess');
     el.textContent = `Possessed · ${name}`;
     el.classList.remove('hidden');

@@ -34,33 +34,62 @@ const REVEAL_RADIUS = 42;
 const CHANNEL_DUR = 3.0; // hold F this long, held still, to take the body
 const HEALTH_RESTORE = 0.55; // fresh host wakes at this fraction of its max HP
 
+// Phase 8 — Risk Possession. An INSTANT snatch (tap G) on the locked target that
+// can fail. Success chance keys off the same size+Dominance threshold the stun
+// path uses: right at "stun-ready" the odds are best, climbing to a healthy
+// target's floor. Chance is always shown before you commit.
+const RISK_MAX_CHANCE = 0.9; // a stun-ready target is nearly a sure thing
+const RISK_MIN_CHANCE = 0.1; // a full-health tougher target is a long shot
+// Chance = base + how favourable the size/Dominance matchup is + how weakened the
+// target is + a small Dominance edge. Both size AND health move the odds.
+const RISK_BASE = 0.12;
+const RISK_MATCHUP_WEIGHT = 0.35; // easier class/size → better odds even at full HP
+const RISK_HEALTH_WEIGHT = 0.5; // weakening the target is the biggest lever
+const RISK_DOM_WEIGHT = 0.02; // per Dominance rank
+const RISK_COOLDOWN = 1.6; // no spamming the gamble after it fails
+// Failed snatch backlash: a chunk of max HP, heavier the longer the odds.
+const RISK_BACKLASH_MIN = 0.18;
+const RISK_BACKLASH_MAX = 0.42;
+
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
 /**
- * Phase 7 — Stun and Guaranteed Possession. Possession is gated on two things:
- * a locked-on TARGET (you must be aiming at a specific creature, right mouse) and
- * a full RESONANCE meter (the character-level charge earned by eating). Only then
- * does the "HOLD F" prompt appear. A creature qualifies if it is below your
- * Dominance (a free grab) or has been weakened past its size-scaled threshold
- * (bigger = must weaken more). Holding F channels for 3 s while the target is
- * stunned; complete it and you slip into that body at its natural size, spending
- * the resonance. The old body is abandoned (no duplication); Dominance carries over.
+ * Host possession — two methods, both gated on a locked-on TARGET (right mouse)
+ * and a full RESONANCE meter (spent per attempt).
+ *
+ * GUARANTEED (Phase 7, hold F): a creature qualifies if it is below your Dominance
+ * or weakened past its size-scaled threshold. Hold F to channel 3 s while it is
+ * stunned, then you slip into that body — reliable and skill-based.
+ *
+ * RISK (Phase 8, tap G): an immediate snatch on ANY locked target, even a healthy
+ * or tougher one, at a shown success chance. Succeed and you take the body; fail
+ * and you burn the resonance anyway, take backlash damage, alert the target, and
+ * eat a short cooldown. The desperate, high-reward option — never the only path.
  */
 export class PlayerPossession {
   /** True while channeling — gates normal control in GameApp (host holds still). */
   possessing = false;
   /** The creature F would take over right now (drives the "HOLD F" prompt). */
   bestTarget: Creature | null = null;
+  /** The locked target a risk-snatch (G) would attempt — any in-range creature. */
+  riskTarget: Creature | null = null;
   /** True when aiming at a takeable creature but resonance isn't charged yet. */
   needsCharge = false;
 
   /** Fired when a takeover completes (host display name + species id). */
   onPossessed: (displayName: string, speciesId: string) => void = () => {};
+  /** Fired on a risk-snatch attempt with its outcome (for HUD flash/toast/sfx). */
+  onRiskResult: (success: boolean, displayName: string) => void = () => {};
 
   private target: Creature | null = null;
   private channelT = 0;
+  private riskCd = 0;
 
   constructor(
     private readonly ecosystem: Ecosystem,
@@ -78,9 +107,11 @@ export class PlayerPossession {
   reset(): void {
     this.possessing = false;
     this.bestTarget = null;
+    this.riskTarget = null;
     this.needsCharge = false;
     this.target = null;
     this.channelT = 0;
+    this.riskCd = 0;
   }
 
   /** 0..1 channel progress (for the on-screen ring/bar). */
@@ -93,27 +124,47 @@ export class PlayerPossession {
     return this.possessing ? this.target : null;
   }
 
+  /** 0..1 success chance of a risk-snatch on the current risk target (0 if none). */
+  get riskChance01(): number {
+    return this.riskTarget ? this.riskChance(this.riskTarget) : 0;
+  }
+
   /**
    * @param target the creature the player is currently locked onto (right mouse),
    *   or null. Possession only ever acts on this targeted creature.
    */
   update(dt: number, target: Creature | null): void {
+    if (this.riskCd > 0) this.riskCd -= dt;
     if (this.possessing) {
       this.advanceChannel(dt);
       return;
     }
     this.markEligible(); // ambient purple bars on all takeable creatures
     this.bestTarget = null;
+    this.riskTarget = null;
     this.needsCharge = false;
 
-    const cand = this.candidate(target);
-    if (!cand) return;
-    if (this.resonance.isFull) {
-      this.bestTarget = cand; // prompt shows; F starts the channel
-      if (this.input.isDown('KeyF')) this.begin(cand);
-    } else {
-      this.needsCharge = true; // aiming at a takeable fish, but not charged
+    // Any locked, in-range, un-stunned creature is a candidate for a risk snatch;
+    // only the eligible (weakened / below-Dominance) ones allow the guaranteed hold.
+    const inReach = this.reachable(target);
+    if (!inReach) {
+      this.input.consumeRisk(); // drop a stray tap when nothing is targeted
+      return;
     }
+
+    if (!this.resonance.isFull) {
+      this.needsCharge = true; // aiming at a fish, but not charged
+      this.input.consumeRisk();
+      return;
+    }
+
+    // Charged + targeting: guaranteed hold (if eligible) and/or an instant gamble.
+    this.riskTarget = inReach;
+    if (this.eligible(inReach)) {
+      this.bestTarget = inReach; // "HOLD F" prompt
+      if (this.input.isDown('KeyF')) this.begin(inReach);
+    }
+    if (this.input.consumeRisk() && this.riskCd <= 0) this.attemptRisk(inReach);
   }
 
   /** Required health fraction for a target to be possessable (size + Dominance). */
@@ -165,12 +216,51 @@ export class PlayerPossession {
     }
   }
 
-  /** The locked-on creature if it can actually be taken over right now, else null. */
-  private candidate(target: Creature | null): Creature | null {
+  /** The locked-on creature if it is alive, un-stunned, and within reach — else null. */
+  private reachable(target: Creature | null): Creature | null {
     if (!target || !target.alive || target.stunT > 0) return null;
     const range = RANGE_BASE + this.fish.length * RANGE_PER_LEN;
-    if (this.inRange(target) > range) return null;
-    return this.eligible(target) ? target : null;
+    return this.inRange(target) <= range ? target : null;
+  }
+
+  /** Success chance (0..1) of an instant risk-snatch on this target. */
+  private riskChance(c: Creature): number {
+    const frac = this.requiredFrac(c); // the guaranteed-stun threshold (size + Dominance)
+    if (c.health01 <= frac) return RISK_MAX_CHANCE; // already stun-ready — near certain
+    // Matchup ease: high for small/below-Dominance targets, low for big/tough ones.
+    const matchup = clamp(
+      (frac - POSSESS_MIN_FRAC) / (POSSESS_MAX_FRAC - POSSESS_MIN_FRAC),
+      0,
+      1,
+    );
+    const weak = 1 - c.health01; // 0 (full HP) → 1 (near dead)
+    const dom = this.dominance.rankIndex * RISK_DOM_WEIGHT;
+    const chance = RISK_BASE + matchup * RISK_MATCHUP_WEIGHT + weak * RISK_HEALTH_WEIGHT + dom;
+    return clamp(chance, RISK_MIN_CHANCE, RISK_MAX_CHANCE);
+  }
+
+  /** Gamble on an instant takeover of the target. Spends resonance either way. */
+  private attemptRisk(target: Creature): void {
+    const chance = this.riskChance(target);
+    const name = target.species.displayName;
+    this.resonance.spend(); // the signal discharges whether it lands or not
+    this.riskCd = RISK_COOLDOWN;
+
+    if (Math.random() < chance) {
+      this.takeOver(target);
+      this.onRiskResult(true, name);
+      return;
+    }
+
+    // Failure: backlash damage (heavier the longer the odds), alert the target,
+    // scatter nearby prey, and a camera jolt. The gamble has real teeth.
+    const backlash = this.combat.maxHealth * lerp(RISK_BACKLASH_MIN, RISK_BACKLASH_MAX, 1 - chance);
+    this.combat.takeDamage(backlash);
+    target.provoke();
+    this.ecosystem.alertPrey();
+    this.camera.punch(20);
+    this.sfx.possessFail();
+    this.onRiskResult(false, name);
   }
 
   private begin(target: Creature): void {
@@ -210,9 +300,12 @@ export class PlayerPossession {
     this.target = null;
     this.channelT = 0;
     if (!target) return;
-
     this.resonance.spend(); // the jump costs the whole charge — go feed again
+    this.takeOver(target);
+  }
 
+  /** Slip into the target's body — shared by the guaranteed and risk paths. */
+  private takeOver(target: Creature): void {
     const sp = target.species;
     const profile = hostProfileFromCreature(sp);
     const inst = this.ecosystem.createHostInstance(sp.id);

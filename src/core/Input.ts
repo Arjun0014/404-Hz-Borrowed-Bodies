@@ -13,6 +13,8 @@ export class Input {
   private keys = new Set<string>();
   /** Left-click attack edge, latched until consumed once per frame. */
   private attackLatched = false;
+  /** Risk-snatch (G) tap edge, latched until consumed once per frame. */
+  private riskLatched = false;
   private readonly el: HTMLElement;
 
   constructor(el: HTMLElement) {
@@ -20,12 +22,16 @@ export class Input {
 
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+      // Risk-snatch is a deliberate tap: latch only the initial press, not the
+      // OS key-repeat, so holding G doesn't machine-gun the gamble.
+      if (e.code === 'KeyG' && this.pointerLocked && !e.repeat) this.riskLatched = true;
       this.keys.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.rmbDown = false;
+      this.riskLatched = false;
     });
 
     document.addEventListener('pointerlockchange', () => {
@@ -65,6 +71,13 @@ export class Input {
     const a = this.attackLatched;
     this.attackLatched = false;
     return a;
+  }
+
+  /** True once per G tap (risk-snatch); consumes the latch. */
+  consumeRisk(): boolean {
+    const r = this.riskLatched;
+    this.riskLatched = false;
+    return r;
   }
 
   requestLock(): void {

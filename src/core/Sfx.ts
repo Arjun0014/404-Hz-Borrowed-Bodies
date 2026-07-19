@@ -230,6 +230,27 @@ export class Sfx {
     osc.stop(t + 0.6);
   }
 
+  /** A risk-snatch failed — a harsh dissonant buzz-down (the signal rejected). */
+  possessFail(): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    // Two detuned saws a tritone apart, crashing downward — deliberately ugly.
+    for (const [f0, f1] of [[440, 90], [311, 66]] as const) {
+      const osc = ac.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f1, t + 0.3);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.26, t + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+      osc.connect(g).connect(this.master);
+      osc.start(t);
+      osc.stop(t + 0.36);
+    }
+  }
+
   /** The host dies — a low synth groan into rumble. */
   death(): void {
     const ac = this.ac();

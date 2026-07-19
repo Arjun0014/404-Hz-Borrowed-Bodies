@@ -444,6 +444,11 @@ export class Ecosystem {
     return { hit, eaten, killed, biomass };
   }
 
+  /** Startle nearby prey away from the host (a failed risk-snatch alerts the sea). */
+  alertPrey(): void {
+    this.playerThreatT = Math.max(this.playerThreatT, 2.5);
+  }
+
   private queryNeighbors(x: number, z: number, r: number): number[] {
     this._nbr.length = 0;
     this.hash.query(x, z, r, this._collect);

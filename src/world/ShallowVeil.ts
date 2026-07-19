@@ -201,7 +201,7 @@ export class ShallowVeil implements Zone {
       depthWrite: false,
       side: DoubleSide,
       fog: false,
-      uniforms: { uTime: { value: 0 } },
+      uniforms: { uTime: { value: 0 }, uDark: { value: 0 } },
       vertexShader: /* glsl */ `
         varying vec3 vWorld;
         void main() {
@@ -211,6 +211,7 @@ export class ShallowVeil implements Zone {
       `,
       fragmentShader: /* glsl */ `
         uniform float uTime;
+        uniform float uDark; // 0..1 depth/deep darkness, matched to the scene fog
         varying vec3 vWorld;
 
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -236,13 +237,23 @@ export class ShallowVeil implements Zone {
           // Two octaves drifting in different directions for shimmer.
           float c = caustic(uv, t) * 0.65 + caustic(uv * 2.3 + 7.0, -t * 1.4) * 0.35;
 
-          vec3 deep = vec3(0.13, 0.36, 0.44);
-          vec3 bright = vec3(0.78, 0.96, 0.99);
-          vec3 col = mix(deep, bright, c);
+          // Moody, water-toned caustics. The old near-white crest read as a bright
+          // ceiling floating over dark water; the trough now sits near the shallow
+          // fog tone and the crest is a lit-but-unblown cyan, never white.
+          vec3 trough = vec3(0.08, 0.20, 0.26);
+          vec3 crest  = vec3(0.34, 0.56, 0.60);
+          vec3 col = mix(trough, crest, c);
+
+          // Recede into the deep as the player descends: dim + tint toward the
+          // abyss so the surface always belongs to the same dark water below.
+          vec3 deepTint = vec3(0.02, 0.07, 0.11);
+          col = mix(col, deepTint, uDark * 0.72);
+          col *= 1.0 - uDark * 0.4;
 
           float dist = length(vWorld.xz);
-          float fade = 1.0 - smoothstep(180.0, 560.0, dist);
-          gl_FragColor = vec4(col, (0.22 + c * 0.42) * fade);
+          float fade = 1.0 - smoothstep(140.0, 480.0, dist);
+          float a = (0.14 + c * 0.28) * fade * (1.0 - uDark * 0.5);
+          gl_FragColor = vec4(col, a);
         }
       `,
     });
@@ -883,6 +894,9 @@ export class ShallowVeil implements Zone {
     const depth01 = Math.min(1, Math.max(0, (WORLD.surfaceY - camera.position.y) / 90));
     const overDeep = smoothstep(WORLD.edgeX - 6, WORLD.descentX + 40, camera.position.x);
     const darkT = Math.max(depth01, overDeep);
+    // The surface caustics dim + tint toward the deep with the same darkness, so
+    // the ceiling never floats bright over the moody water below.
+    this.surfaceMat.uniforms.uDark.value = darkT;
     this.fogNow
       .copy(this.fogShallow)
       .lerp(this.fogDeep, smoothstep(0, 0.62, darkT))

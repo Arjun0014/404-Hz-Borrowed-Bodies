@@ -96,13 +96,17 @@ export class Dominance {
     return clamp((this.points - cur) / (next - cur), 0, 1);
   }
 
-  /** Record the player defeating a creature; grows Dominance per the rules. */
-  recordKill(species: CreatureSpecies): void {
+  /**
+   * Record the player defeating a creature; grows Dominance per the rules.
+   * @param yieldMult external scaling — the Dead Signal Field passes a decaying
+   *   value so the frenzy cannot be farmed for rank (Phase 13 anti-farm rule).
+   */
+  recordKill(species: CreatureSpecies, yieldMult = 1): void {
     const { cls, value } = classify(species);
     const kills = this.run.data.speciesKills[species.id] ?? 0;
 
     // Base value, boosted on first defeat, decaying for repeats of the species.
-    let gain = value * (1 / (1 + kills * FALLOFF)) * (kills === 0 ? FIRST_KILL_BONUS : 1);
+    let gain = value * (1 / (1 + kills * FALLOFF)) * (kills === 0 ? FIRST_KILL_BONUS : 1) * yieldMult;
 
     // Class cap: once Dominance is past what this class can grant, its kills
     // barely register — you have to hunt bigger to keep advancing.

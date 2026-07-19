@@ -67,6 +67,12 @@ export interface Zone {
   getBounds(): ZoneBounds;
   /** Where the ecosystem may spawn creatures; null = this zone has none. */
   getPopulationArea(): PopulationArea | null;
+  /**
+   * Where this zone's Signal Carrier stands (seabed height included), or null if
+   * the zone has no Carrier encounter. Zones choose their own landmark so the
+   * relay always sits somewhere worth swimming to.
+   */
+  getCarrierAnchor(out: Vector3): Vector3 | null;
 
   /** Null when this zone has no further descent (dead-end / final). */
   getDescentInfo(): DescentInfo | null;

@@ -2,18 +2,19 @@ import {
   ACESFilmicToneMapping,
   Scene,
   SRGBColorSpace,
-  TextureLoader,
+  type Texture,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import type { TerrainMaps } from '../world/types';
 // Seabed PBR set — Poly Haven "coast_sand_rocks_02" (CC0): diffuse, normal (GL),
-// ARM (AO/rough/metal), and displacement. Raw JPG/PNG sources; KTX2 variants are
-// swapped in via SEABED_ENCODING below once we've verified the source path.
-import seabedDiffUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_diff_1k.jpg';
-import seabedNorUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_nor_gl_1k.png';
-import seabedArmUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_arm_1k.png';
-import seabedDispUrl from '../../assets/textures/coast_sand_rocks_02_1k/textures/coast_sand_rocks_02_disp_1k.png';
+// ARM (AO/rough/metal), and displacement, as GPU-compressed KTX2.
+//
+// The raw JPG/PNG sources are still in assets/ (they are what
+// `node scripts/encode-ktx2.mjs` reads) but are no longer IMPORTED: a static
+// import made Vite bundle all four into the build even though nothing sampled
+// them, shipping ~6.4 MB of dead weight. To A/B against the sources again,
+// re-add the four `?url` imports and the 'image' branch in loadSeabedMaps.
 import seabedDiffKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_diff_1k.ktx2?url';
 import seabedNorKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_nor_gl_1k.ktx2?url';
 import seabedArmKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_arm_1k.ktx2?url';
@@ -43,7 +44,10 @@ import { Dominance } from '../systems/Dominance';
 import { Sfx, AMBIENT } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
 import { SHALLOW_VEIL_POP } from '../data/creatures';
-import type { Zone } from '../world/types';
+import { SignalCarrier } from '../entities/SignalCarrier';
+import { DeadSignalField } from '../systems/DeadSignalField';
+import { Score } from '../systems/Score';
+import type { CylinderCollider, Zone } from '../world/types';
 import type { Creature } from '../entities/Creature';
 
 const TAIL_POS = new Vector3();
@@ -51,19 +55,24 @@ const SPAWN = new Vector3();
 const LOCK_AIM = new Vector3();
 const LOCK_TO = new Vector3();
 const LOCK_PROJ = new Vector3();
+const CARRIER_ANCHOR = new Vector3();
+const CARRIER_PROJ = new Vector3();
+
+// Signal Carrier HUD ranges.
+/** Within this distance the Carrier's health bar takes over the screen. */
+const CARRIER_ENGAGE_RANGE = 120;
+/** Within this the off-screen direction marker appears — most of the shelf. */
+const CARRIER_TRACK_RANGE = 400;
+
+// Dead Signal Field anti-farm: in-field kills stop paying Dominance after a few,
+// so the frenzy is a survival and possession opportunity, not a rank farm.
+const FIELD_FREE_KILLS = 4;
+const FIELD_KILL_DECAY = 0.45;
 
 // Hold-RMB lock-on tuning.
 const LOCK_RANGE = 60; // max acquire distance
 const LOCK_KEEP_RANGE = 78; // sticky: hold a target a bit past acquire range
 const LOCK_CONE = 0.3; // target must be within this view-cone of the aim to acquire
-
-/**
- * Seabed texture encoding. 'ktx2' loads GPU-compressed Basis/UASTC (~4x less
- * VRAM, smaller on disk, no CPU image decode); 'image' loads the raw JPG/PNG
- * sources. Kept switchable so the two can be A/B'd. Regenerate the KTX2 set
- * after changing a source map: `node scripts/encode-ktx2.mjs`.
- */
-const SEABED_ENCODING: 'ktx2' | 'image' = 'ktx2';
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -95,6 +104,17 @@ export class GameApp {
   private resonance!: PlayerResonance;
   private connection!: PlayerConnection;
   private dominance!: Dominance;
+  private score!: Score;
+  /** The zone's Signal Carrier (Phase 12) — null once destroyed or in a zone without one. */
+  private carrier: SignalCarrier | null = null;
+  /** The Dead Signal Field its death left behind (Phase 13). */
+  private field: DeadSignalField | null = null;
+  /** One Carrier per zone per run: never rebuild one the player already killed. */
+  private carrierDownThisZone = false;
+  /** Kills made inside the field this run — feeds the anti-farm yield decay. */
+  private fieldKills = 0;
+  /** The Carrier's solid obstacle, pushed into the zone's collider array. */
+  private carrierCollider: CylinderCollider | null = null;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
@@ -163,18 +183,12 @@ export class GameApp {
 
   /** Load the shared seabed PBR maps (diffuse / normal / ARM / displacement). */
   private async loadSeabedMaps(): Promise<TerrainMaps> {
-    const ktx2 = SEABED_ENCODING === 'ktx2';
-    const load = ktx2
-      ? (url: string) => this.loader.loadKTX2(url)
-      : (() => {
-          const l = new TextureLoader();
-          return (url: string) => l.loadAsync(url);
-        })();
+    const load = (url: string): Promise<Texture> => this.loader.loadKTX2(url);
     const [map, normalMap, armMap, displacementMap] = await Promise.all([
-      load(ktx2 ? seabedDiffKtxUrl : seabedDiffUrl),
-      load(ktx2 ? seabedNorKtxUrl : seabedNorUrl),
-      load(ktx2 ? seabedArmKtxUrl : seabedArmUrl),
-      load(ktx2 ? seabedDispKtxUrl : seabedDispUrl),
+      load(seabedDiffKtxUrl),
+      load(seabedNorKtxUrl),
+      load(seabedArmKtxUrl),
+      load(seabedDispKtxUrl),
     ]);
     // Diffuse is sRGB colour; normal/ARM/displacement are linear data maps.
     // (KTX2 carries the transfer function in its DFD, but enforce it anyway.)
@@ -268,13 +282,16 @@ export class GameApp {
     this.combat.onFeed = (biomass) => {
       this.growth.feed(biomass);
       this.resonance.feed(biomass);
+      this.score?.feed(biomass);
     };
     this.resonance.onFull = () => this.showResonanceReady();
     this.growth.onStageUp = (name) => this.showStageToast(name);
 
     // Dominance: defeating creatures builds a persistent run-level rank.
     this.dominance = new Dominance(this.runState);
-    this.ecosystem.onPlayerKill = (c) => this.dominance.recordKill(c.species);
+    this.score = new Score(this.runState);
+    this.ecosystem.onPlayerKill = (c) => this.recordKill(c);
+    this.combat.onCarrierHit = (nodeKilled, died) => this.onCarrierHit(nodeKilled, died);
     this.dominance.onRankUp = (name) => this.onDominanceRankUp(name);
     this.dominance.onWeakCapped = () =>
       this.showHint('Weak prey no longer raises Dominance — hunt bigger creatures.', 5);
@@ -311,6 +328,10 @@ export class GameApp {
     // eased only by slipping into a fresh body; full Connection ends the run.
     this.connection = new PlayerConnection();
     this.connection.onFull = () => this.onConnectionFull();
+
+    // Signal Carrier: the zone's objective. Built last, so its garrison can be
+    // seeded from an already-populated ecosystem.
+    await this.buildCarrier(zone);
 
     this.updateZoneTag();
 
@@ -421,7 +442,11 @@ export class GameApp {
         if (this.promptShown) this.input.consumeAbility();
         else this.ability.update(dt);
       }
+      this.updateObjective(dt, dead);
       this.updateConnection(dt, dead);
+      this.updateOnboarding(dt);
+      this.updateCarrierHud();
+      this.updateFieldHud();
       this.updateCombatHud();
       this.updateGrowthHud();
       this.updateResonanceHud();
@@ -531,12 +556,26 @@ export class GameApp {
   }
 
   private showAbilityToast(name: string): void {
+    this.showToast(`${name}!`, null, 1200);
+  }
+
+  /**
+   * The single centre-screen toast, shared by every system that flashes a line.
+   * `variant` picks the palette (null = the default gold); passing it explicitly
+   * matters because the variant classes are sticky and must be cleared each time.
+   */
+  private showToast(
+    text: string,
+    variant: 'dom' | 'possess' | 'resonance' | 'fail' | null,
+    ms: number,
+  ): void {
     const el = document.getElementById('stage-toast')!;
     el.classList.remove('dom', 'possess', 'resonance', 'fail');
-    el.textContent = `${name}!`;
+    if (variant) el.classList.add(variant);
+    el.textContent = text;
     el.classList.remove('hidden');
-    void el.offsetWidth;
-    this.stageToastUntil = performance.now() + 1200;
+    void el.offsetWidth; // restart the pop animation
+    this.stageToastUntil = performance.now() + ms;
   }
 
   // ---- ability HUD (host special move) ------------------------------------
@@ -619,7 +658,11 @@ export class GameApp {
     if (!this.connection) return;
     if (this.started && !dead) {
       // Per-host signal cost: a shark draws the entity far faster than a quiet crab.
-      const connMult = this.fish.species.connectionMult;
+      // Standing in the Carrier's aura multiplies it again — that is what makes
+      // approaching the relay a decision rather than a formality.
+      const connMult =
+        this.fish.species.connectionMult *
+        (this.carrier?.alive ? this.carrier.connectionMultAt(this.controller.pos) : 1);
       this.connection.update(dt, this.fish.length, connMult);
       // Resonance also trickles up over time, paced to the Connection rise, so the
       // means to escape builds alongside the pressure. Eating is still far faster.
@@ -700,6 +743,181 @@ export class GameApp {
   }
   freezeConnection(on = true): void {
     if (this.connection) this.connection.frozen = on;
+  }
+
+  // ---- onboarding (Phase 14: teach through play, not a tutorial) ----------
+
+  /** Beats already fired this run — each one shows exactly once. */
+  private readonly beatsShown = new Set<string>();
+  private beatCooldown = 0;
+
+  /**
+   * Contextual teaching. Each beat is a condition the player has just walked
+   * into, phrased as a nudge rather than an instruction, shown once, and rate
+   * limited so two never collide. The order they naturally fire in follows the
+   * core loop: eat → charge → take a body → feel the grip tighten → go find the
+   * thing that can loosen it.
+   */
+  private updateOnboarding(dt: number): void {
+    if (!this.started || this.combat.dead || this.transitioning) return;
+    this.beatCooldown -= dt;
+    if (this.beatCooldown > 0) return;
+
+    const beat = (key: string, cond: boolean, text: string, secs = 5): boolean => {
+      if (this.beatsShown.has(key) || !cond) return false;
+      this.beatsShown.add(key);
+      this.showHint(text, secs);
+      this.beatCooldown = secs + 1.5;
+      return true;
+    };
+
+    // The opening nudge: what to do with the ocean you woke up in.
+    if (beat('hunt', this.runState.data.stats.timeSeconds > 4,
+      'Hunt. Eating fills RESONANCE — and Resonance is what lets you take a body.')) return;
+
+    // Charged for the first time: how to actually spend it.
+    if (beat('lock', this.resonance.isFull,
+      'Hold RIGHT MOUSE to lock a target, then HOLD F to slip into it — or tap G to gamble.')) return;
+
+    // The pressure becomes legible before it becomes dangerous.
+    if (beat('connection', this.connection.value01 > 0.35,
+      'The entity is closing in. A body you have not worn recently loosens its grip.')) return;
+
+    // Point them at the objective once they can sense it at all.
+    const c = this.carrier;
+    if (c?.alive && beat('carrier',
+      this.controller.pos.distanceTo(c.pos) < CARRIER_TRACK_RANGE,
+      'Something is broadcasting across the shelf. Follow the pulse — killing it is the only lasting relief.',
+      6.5)) return;
+
+    // Only worth saying once they are genuinely in trouble.
+    beat('critical', this.connection.value01 > 0.85,
+      'It almost has you. Take a fresh body NOW, or find the Carrier.', 6);
+  }
+
+  // ---- Signal Carrier HUD --------------------------------------------------
+
+  private carrierHudEl: HTMLElement | null = null;
+  private carrierFillEl: HTMLElement | null = null;
+  private carrierStageEl: HTMLElement | null = null;
+  private carrierNodesEl: HTMLElement | null = null;
+  private carrierMarkEl: HTMLElement | null = null;
+  private carrierPct = -1;
+  private carrierNodeText = '';
+  private carrierSeen = false;
+
+  /**
+   * Two readouts, deliberately separate: a boss bar once you are close enough to
+   * be fighting it, and an off-screen direction marker from most of the shelf
+   * away. The marker is the discovery aid — the design brief asks that the
+   * Carrier be findable from half the zone, and fog alone will not do that.
+   */
+  private updateCarrierHud(): void {
+    this.carrierHudEl ||= document.getElementById('carrier-hud');
+    this.carrierMarkEl ||= document.getElementById('carrier-marker');
+    if (!this.carrierHudEl || !this.carrierMarkEl) return;
+
+    const c = this.carrier;
+    if (!c || !c.alive || !this.started || this.combat.dead) {
+      this.carrierHudEl.classList.add('hidden');
+      this.carrierMarkEl.classList.add('hidden');
+      return;
+    }
+
+    const dist = this.controller.pos.distanceTo(c.pos);
+
+    // --- boss bar (close range) ---
+    const engaged = dist < CARRIER_ENGAGE_RANGE;
+    this.carrierHudEl.classList.toggle('hidden', !engaged);
+    if (engaged) {
+      if (!this.carrierSeen) {
+        this.carrierSeen = true;
+        this.showToast('SIGNAL CARRIER', 'resonance', 2600);
+        this.showHint(
+          'Break its three SIGNAL NODES — they shield the body and each one is worth a fifth of it.',
+          7,
+        );
+      }
+      this.carrierFillEl ||= document.getElementById('carrier-fill');
+      this.carrierStageEl ||= document.getElementById('carrier-stage');
+      this.carrierNodesEl ||= document.getElementById('carrier-nodes');
+      const pct = Math.round(c.health01 * 100);
+      if (pct !== this.carrierPct) {
+        this.carrierPct = pct;
+        if (this.carrierFillEl) this.carrierFillEl.style.width = `${pct}%`;
+        if (this.carrierStageEl) this.carrierStageEl.textContent = c.stageName;
+      }
+      // Node pips + the shield state, only rewritten when they actually change.
+      const alive = c.nodesAlive;
+      const text = alive > 0 ? `${'◆ '.repeat(alive).trim()}  SHIELDED` : 'SHIELD DOWN';
+      if (text !== this.carrierNodeText) {
+        this.carrierNodeText = text;
+        if (this.carrierNodesEl) this.carrierNodesEl.textContent = text;
+        this.carrierHudEl.classList.toggle('unshielded', alive === 0);
+      }
+      this.carrierHudEl.classList.toggle('critical', c.health01 < 0.25);
+    }
+
+    // --- off-screen direction marker (long range) ---
+    if (dist > CARRIER_TRACK_RANGE) {
+      this.carrierMarkEl.classList.add('hidden');
+      return;
+    }
+    CARRIER_PROJ.copy(c.pos).project(this.playerCamera.camera);
+    const behind = CARRIER_PROJ.z > 1;
+    const onScreen =
+      !behind && Math.abs(CARRIER_PROJ.x) < 0.94 && Math.abs(CARRIER_PROJ.y) < 0.9;
+    // Once you can see it, the marker gets out of the way.
+    if (onScreen && engaged) {
+      this.carrierMarkEl.classList.add('hidden');
+      return;
+    }
+    let nx = CARRIER_PROJ.x;
+    let ny = CARRIER_PROJ.y;
+    if (behind) {
+      nx = -nx;
+      ny = -ny;
+    }
+    // Push the marker out to the screen edge along its own direction.
+    const m = Math.max(Math.abs(nx), Math.abs(ny), 1e-3);
+    const edge = behind || !onScreen ? 0.86 / m : 1;
+    const x = (nx * edge * 0.5 + 0.5) * window.innerWidth;
+    const y = (-ny * edge * 0.5 + 0.5) * window.innerHeight;
+    this.carrierMarkEl.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
+    this.carrierMarkEl.textContent = `◈ CARRIER ${Math.round(dist)}m`;
+    this.carrierMarkEl.classList.remove('hidden');
+  }
+
+  // ---- Dead Signal Field HUD ----------------------------------------------
+
+  private fieldHudEl: HTMLElement | null = null;
+  private fieldFillEl: HTMLElement | null = null;
+  private fieldStateEl: HTMLElement | null = null;
+  private fieldInside = false;
+
+  private updateFieldHud(): void {
+    this.fieldHudEl ||= document.getElementById('field-hud');
+    if (!this.fieldHudEl) return;
+    const f = this.field;
+    const show = !!f && f.active && this.started && !this.combat.dead;
+    this.fieldHudEl.classList.toggle('hidden', !show);
+    if (!show || !f) {
+      this.fieldInside = false;
+      return;
+    }
+    this.fieldFillEl ||= document.getElementById('field-fill');
+    this.fieldStateEl ||= document.getElementById('field-state');
+    if (this.fieldFillEl) this.fieldFillEl.style.width = `${f.life01 * 100}%`;
+
+    const inside = f.contains(this.controller.pos);
+    if (inside !== this.fieldInside) {
+      this.fieldInside = inside;
+      this.fieldHudEl.classList.toggle('inside', inside);
+      if (this.fieldStateEl) {
+        this.fieldStateEl.textContent = inside ? 'CONNECTION DRAINING' : 'COLLAPSING';
+      }
+      if (inside) this.showHint('the entity loses its grip — but nothing here is on your side', 3.5);
+    }
   }
 
   // ---- dominance HUD -------------------------------------------------------
@@ -787,6 +1005,7 @@ export class GameApp {
   /** A risk-snatch resolved — flash + toast the outcome. */
   private onRiskResult(success: boolean, name: string): void {
     if (success) return; // the possess flow (onPossessed) already handles success
+    this.score.breakStreak(); // a botched snatch ends the chain
     const flash = document.getElementById('possess-flash');
     if (flash) {
       flash.classList.remove('flash', 'fail');
@@ -811,6 +1030,7 @@ export class GameApp {
     // A fresh body loosens the entity's grip; a recently-worn one barely helps.
     const fresh = this.connection.freshness(speciesId);
     this.connection.possess(speciesId);
+    this.score.possessed(speciesId, this.possession.lastPossessionWasRisk);
     this.ability.reset(); // the new host's special move is ready immediately
     this.abilityReadyPct = -1; // force the ability HUD to repaint for the new host
 
@@ -925,19 +1145,62 @@ export class GameApp {
     this.combat.dead = true; // gate control everywhere + enable R to restart
     document.exitPointerLock?.();
     this.possession?.reset();
+    this.score?.breakStreak();
     this.lockedCreature = null;
     this.playerCamera?.setLockTarget(null);
     this.damageBars.hideAll();
     this.sfx.setConnectionDrone(0);
+    this.sfx.setFieldTone(0);
     document.getElementById('lock-reticle')?.classList.add('hidden');
     document.getElementById('possess-prompt')?.classList.add('hidden');
     document.getElementById('connection-warning')?.classList.add('hidden');
+    document.getElementById('carrier-hud')?.classList.add('hidden');
+    document.getElementById('carrier-marker')?.classList.add('hidden');
+    document.getElementById('field-hud')?.classList.add('hidden');
+    // Clear in-flight feedback, or a toast/hint from the moment of death hangs
+    // over the summary. The hint's own timer is cancelled too.
+    if (this.hintTimer) window.clearTimeout(this.hintTimer);
+    this.hintTimer = 0;
+    this.stageToastUntil = 0;
+    document.getElementById('stage-toast')?.classList.add('hidden');
+    document.getElementById('hint')?.classList.add('hidden');
     const ds = document.getElementById('death-screen')!;
     (ds.querySelector('.death-title') as HTMLElement).textContent = title;
     (ds.querySelector('.death-sub') as HTMLElement).textContent = sub;
     ds.classList.toggle('signal', variant === 'signal');
+    this.renderRunSummary();
     ds.classList.remove('hidden');
     document.getElementById('resume-chip')!.classList.add('hidden');
+  }
+
+  /**
+   * The run summary (Phase 14's first scoring pass): what the run was actually
+   * worth, itemised. Showing the breakdown rather than a bare number is the
+   * point — it teaches which behaviours pay, which is how the score model
+   * steers play away from farming.
+   */
+  private renderRunSummary(): void {
+    const host = document.getElementById('run-summary');
+    if (!host || !this.score) return;
+    const total = this.score.commit();
+    const lines = this.score.breakdown();
+    const mins = Math.floor(this.runState.data.stats.timeSeconds / 60);
+    const secs = Math.floor(this.runState.data.stats.timeSeconds % 60);
+
+    const rows = lines
+      .map(
+        (l) =>
+          `<div class="rs-row"><span class="rs-label">${l.label}</span>` +
+          `<span class="rs-detail">${l.detail}</span>` +
+          `<span class="rs-pts">${l.points.toLocaleString()}</span></div>`,
+      )
+      .join('');
+    host.innerHTML =
+      `<div class="rs-total"><span>RUN SCORE</span><b>${total.toLocaleString()}</b></div>` +
+      `<div class="rs-rows">${rows || '<div class="rs-row rs-empty">nothing worth recording</div>'}</div>` +
+      `<div class="rs-time">survived ${mins}m ${secs}s · Dominance ${this.dominance.rankName}` +
+      `${this.score.carriers > 0 ? ` · ${this.score.carriers} Carrier down` : ''}</div>`;
+    host.classList.remove('hidden');
   }
 
   /** Scatter the seabed forest for a zone (none when the zone has no area). */
@@ -945,6 +1208,160 @@ export class GameApp {
     const area = zone.getPopulationArea();
     if (area) this.flora.bindZone(zone.terrain, area, zone.colliders);
     else this.flora.unbind();
+  }
+
+  // ---- Signal Carrier + Dead Signal Field (Phases 12–13) -------------------
+
+  /**
+   * Stand up the zone's Signal Carrier and its garrison. Safe to call for zones
+   * that have no Carrier (it simply does nothing), and it refuses to rebuild one
+   * the player has already destroyed — one Carrier per zone per run is the
+   * anti-farm rule that keeps Dead Signal Fields scarce.
+   */
+  private async buildCarrier(zone: Zone): Promise<void> {
+    this.disposeCarrier();
+    if (this.carrierDownThisZone) return;
+    const anchor = zone.getCarrierAnchor(CARRIER_ANCHOR);
+    if (!anchor) return;
+
+    try {
+      this.carrier = await SignalCarrier.create(
+        this.loader,
+        this.scene,
+        anchor,
+        zone.getBounds().ceilingY,
+      );
+    } catch (err) {
+      // Non-fatal: the zone is still playable, it just has no objective.
+      console.warn('[404hz] signal carrier failed to load', err);
+      return;
+    }
+    this.carrier.onDeath = (pos) => this.onCarrierDeath(pos);
+    this.carrier.onNodeDestroyed = (left) => this.onCarrierNode(left);
+    this.carrier.onPulse = (prox) => this.sfx.carrierPulse(prox);
+    this.ecosystem.carrier = this.carrier;
+    this.ecosystem.garrisonCarrier(this.carrier.pos, 6);
+
+    // Make the relay solid. Pushing a collider into the zone's live array gives
+    // player, camera, and creature avoidance in one move — they all read the
+    // same array instance. It is removed again in disposeCarrier.
+    this.carrierCollider = {
+      x: this.carrier.pos.x,
+      z: this.carrier.pos.z,
+      r: this.carrier.radius,
+      top: this.carrier.pos.y + this.carrier.radius,
+    };
+    zone.colliders.push(this.carrierCollider);
+  }
+
+  private disposeCarrier(): void {
+    if (this.carrierCollider) {
+      const cols = this.zones?.current.colliders;
+      const i = cols ? cols.indexOf(this.carrierCollider) : -1;
+      if (i >= 0) cols!.splice(i, 1);
+      this.carrierCollider = null;
+    }
+    this.carrier?.dispose();
+    this.carrier = null;
+    this.field?.dispose();
+    this.field = null;
+    if (this.ecosystem) {
+      this.ecosystem.carrier = null;
+      this.ecosystem.field = null;
+    }
+  }
+
+  /** A bite connected with the relay — feedback scaled to what it hit. */
+  private onCarrierHit(nodeKilled: boolean, died: boolean): void {
+    if (died || nodeKilled) return; // those have their own, louder feedback
+    this.sfx.biteLanded(0.7);
+  }
+
+  /** A signal node popped: a big chunk of the bar, and the shield weakens. */
+  private onCarrierNode(remaining: number): void {
+    this.score.carrierNodeDestroyed();
+    this.sfx.carrierNodeBreak();
+    this.triggerShake();
+    this.showToast(
+      remaining > 0
+        ? `SIGNAL NODE BROKEN · ${remaining} left`
+        : 'SHIELD DOWN — TEAR IT APART',
+      'possess',
+      2200,
+    );
+  }
+
+  /**
+   * The Carrier dies. This is the run's turning point: the entity loses a relay,
+   * a Dead Signal Field opens over the corpse, and the local ecosystem tips into
+   * a frenzy inside it.
+   */
+  private onCarrierDeath(pos: Vector3): void {
+    this.carrierDownThisZone = true;
+    this.score.carrierKilled();
+    this.sfx.carrierDeath();
+    this.triggerShake();
+    this.ecosystem.alertPrey();
+
+    this.field = new DeadSignalField(this.scene, pos);
+    this.ecosystem.field = this.field;
+    this.ecosystem.carrier = null;
+
+    const flash = document.getElementById('possess-flash');
+    if (flash) {
+      flash.classList.remove('flash', 'fail');
+      void flash.offsetWidth;
+      flash.classList.add('flash');
+    }
+    this.showToast('THE CARRIER IS DEAD', 'resonance', 3000);
+    this.showHint(
+      'A DEAD SIGNAL FIELD opens. Inside it the entity cannot hold you — and everything here has turned on everything else.',
+      7,
+    );
+  }
+
+  /** Advance the Carrier + field, and apply everything the field does to the run. */
+  private updateObjective(dt: number, dead: boolean): void {
+    const pos = this.controller.pos;
+
+    // The corpse keeps updating after death so its collapse flare can play out;
+    // it is only disposed on zone change.
+    this.carrier?.update(dt, pos);
+
+    if (this.field) {
+      if (!this.field.update(dt)) {
+        this.field.dispose();
+        this.field = null;
+        this.ecosystem.field = null;
+        this.sfx.setFieldTone(0);
+        this.possession.externalRiskBonus = 0;
+        this.showHint('the dead signal collapses — the entity is back', 3);
+      }
+    }
+
+    const strength = !dead && this.field ? this.field.strengthAt(pos) : 0;
+    // Inside the field the entity's grip actually loosens — the only renewable
+    // Connection relief in a run.
+    if (strength > 0 && this.connection) this.connection.drain(this.field!.drainFor(pos, dt));
+    this.possession.externalRiskBonus = this.field ? this.field.riskBonusFor(pos) : 0;
+    this.sfx.setFieldTone(strength);
+    this.score?.tick(dt, this.connection?.value01 ?? 0, strength > 0);
+  }
+
+  /**
+   * Dominance credit for a kill, with the field's anti-farm decay applied. The
+   * first few kills inside a frenzy pay normally; after that the field stops
+   * being a rank farm and goes back to being a survival problem.
+   */
+  private recordKill(c: Creature): void {
+    let mult = 1;
+    if (this.field?.contains(c.pos)) {
+      this.fieldKills++;
+      if (this.fieldKills > FIELD_FREE_KILLS) {
+        mult = Math.pow(FIELD_KILL_DECAY, this.fieldKills - FIELD_FREE_KILLS);
+      }
+    }
+    this.dominance.recordKill(c.species, mult);
   }
 
   /** Populate the ecosystem for a zone (empty when the zone has no area). */
@@ -979,6 +1396,15 @@ export class GameApp {
     const el = document.getElementById('descend-prompt')!;
     (el.querySelector('.dp-target') as HTMLElement).textContent = info.targetName;
     (el.querySelector('.dp-dom') as HTMLElement).textContent = info.recommendedDominance;
+    // Descent should feel earned. If the zone's Carrier is still broadcasting,
+    // say so plainly — you are leaving the only Connection relief behind you,
+    // and there is no way back to it.
+    const note = el.querySelector('.dp-carrier') as HTMLElement | null;
+    if (note) {
+      const pending = !!this.carrier?.alive;
+      note.classList.toggle('hidden', !pending);
+      if (pending) note.textContent = 'The Signal Carrier here is still alive. There is no return.';
+    }
     el.classList.remove('hidden');
   }
 
@@ -1022,6 +1448,11 @@ export class GameApp {
     this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
     this.bindEcosystem(next);
     this.ecosystem.armSpawnSafe(SPAWN.x, SPAWN.z, 30);
+    // A fresh zone gets a fresh objective — one Carrier each, never a second.
+    this.carrierDownThisZone = false;
+    this.carrierSeen = false;
+    this.fieldKills = 0;
+    await this.buildCarrier(next);
     this.updateZoneAmbient();
     this.spawnGrace = 3.0; // brief peace after arriving in the new zone
     this.updateZoneTag();
@@ -1070,11 +1501,20 @@ export class GameApp {
     console.log('[404hz][test] done. Geometry/texture counts should be flat across descents.');
   }
 
+  private hintTimer = 0;
+
   private showHint(text: string, seconds: number): void {
     const el = document.getElementById('hint')!;
+    // Cancel any pending hide first: with onboarding beats, ability toasts, and
+    // objective callbacks all writing here, a stale timer from an earlier hint
+    // would otherwise blank the current one part-way through.
+    if (this.hintTimer) window.clearTimeout(this.hintTimer);
     el.textContent = text;
     el.classList.remove('hidden');
-    window.setTimeout(() => el.classList.add('hidden'), seconds * 1000);
+    this.hintTimer = window.setTimeout(() => {
+      el.classList.add('hidden');
+      this.hintTimer = 0;
+    }, seconds * 1000);
   }
 
   private onResize(): void {

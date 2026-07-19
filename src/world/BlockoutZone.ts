@@ -289,6 +289,11 @@ export class BlockoutZone implements Zone {
     return null;
   }
 
+  /** No ecosystem here, so no Carrier encounter either (it arrives with Phase 15). */
+  getCarrierAnchor(_out: Vector3): Vector3 | null {
+    return null;
+  }
+
   /** The blockout's descent is the glowing central core. */
   isInDescentZone(pos: Vector3): boolean {
     return Math.hypot(pos.x, pos.z) < 26;

@@ -36,6 +36,21 @@ export interface EcoContext {
   spawnSafeActive: boolean;
   spawnSafe: Vector3;
   spawnSafeR: number;
+
+  // ---- Signal Carrier (Phase 12) ----
+  /** The living Carrier's position, or null. Its aura enrages the predators
+   *  around it into a garrison — the thing you must fight through to reach it. */
+  carrierPos: Vector3 | null;
+  carrierAuraR: number;
+  /** True while the host is inside that aura (the garrison turns on it). */
+  playerInAura: boolean;
+
+  // ---- Dead Signal Field (Phase 13) ----
+  /** The active field's centre, or null. Creatures inside it go frenzied. */
+  fieldPos: Vector3 | null;
+  fieldR: number;
+  /** How far out the field's dead signal drags creatures toward the brawl. */
+  fieldPullR: number;
 }
 
 /** Bite damage a predator deals to the host, by role. */
@@ -45,7 +60,33 @@ const PLAYER_BITE_DAMAGE: Record<string, number> = {
   shark: 34,
 };
 
-export type CreatureState = 'wander' | 'school' | 'flee' | 'hunt' | 'crab_scuttle' | 'crab_jump';
+export type CreatureState =
+  | 'wander'
+  | 'school'
+  | 'flee'
+  | 'hunt'
+  | 'frenzy'
+  | 'crab_scuttle'
+  | 'crab_jump';
+
+// ---- Frenzy (Phase 13) ----
+// Inside a Dead Signal Field every creature attacks whatever is nearest, friend
+// or foe. The frenzy brain is deliberately the cheapest in the game — one small
+// neighbour query, nearest target, charge, bite — because this is the scene with
+// the most simultaneous actors. No boids, no fear, no senses, no terrain
+// look-ahead beyond the floor clamp that move() already applies.
+const FRENZY_SENSE = 17; // how far a frenzied creature looks for something to maul
+const FRENZY_BITE_CD = 1.1; // seconds between its bites
+const FRENZY_SPEED = 1.45; // it swims at this multiple of its top speed
+/**
+ * Bite damage a frenzied creature deals, per meter of its own body length.
+ * Tuned down from 9 after measuring: at 9 the field killed 25 creatures in three
+ * seconds and stripped itself bare, which defeats the point — the field is meant
+ * to leave WEAKENED bodies lying around for you to take, not corpses.
+ */
+const FRENZY_DMG_PER_LEN = 6;
+/** Damage it deals to the host, per meter of body length (lower — you're armoured). */
+const FRENZY_PLAYER_DMG_PER_LEN = 5;
 
 // Module scratch — zero per-frame allocation.
 const _sep = new Vector3();
@@ -91,6 +132,9 @@ export class Creature {
   /** Seconds the apex will retaliate against the player after being attacked by it.
    *  Unprovoked, the shark ignores the host and just hunts other fish. */
   provokedT = 0;
+  /** Seconds left in a Dead Signal Field frenzy (Phase 13). Refreshed while inside. */
+  frenzyT = 0;
+  private frenzyBiteCd = 0;
 
   /** This predator is currently going for the player. */
   private huntPlayer = false;
@@ -142,6 +186,8 @@ export class Creature {
     this.stunReady = false;
     this.stunT = 0;
     this.provokedT = 0;
+    this.frenzyT = 0;
+    this.frenzyBiteCd = 0;
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.yaw = Math.random() * Math.PI * 2;
@@ -192,6 +238,7 @@ export class Creature {
     this.target = null;
     this.huntPlayer = false;
     this.stunReady = false;
+    this.frenzyT = 0;
     this.inst.root.visible = false;
     this.respawnTimer = 3 + Math.random() * 5;
   }
@@ -201,7 +248,84 @@ export class Creature {
   think(ctx: EcoContext, dt: number): void {
     if (this.stunT > 0) return; // dazed — no decisions while stunned
     if (this.species.role === 'crab') this.crabThink(ctx, dt);
+    else if (this.frenzyT > 0) this.frenzyThink(ctx);
     else this.fishThink(ctx, dt);
+  }
+
+  /** Drag this creature into a Dead Signal Field frenzy (Ecosystem's director). */
+  enterFrenzy(seconds: number): void {
+    if (this.species.role === 'crab') return; // armoured seabed walkers sit it out
+    this.frenzyT = Math.max(this.frenzyT, seconds);
+  }
+
+  /**
+   * The frenzy brain: charge the nearest living thing and bite it. No allegiance,
+   * no fear, no schooling — the dead signal strips everything else away. Costs one
+   * short neighbour query per think, which is why the field can hold a crowd.
+   */
+  private frenzyThink(ctx: EcoContext): void {
+    this.state = 'frenzy';
+    this.target = null;
+    this.huntPlayer = false;
+
+    let best: Creature | null = null;
+    let bestD = Infinity;
+    const ids = ctx.queryNeighbors(this.pos.x, this.pos.z, FRENZY_SENSE);
+    for (let i = 0; i < ids.length; i++) {
+      const o = ctx.creatures[ids[i]];
+      if (!o || o === this || !o.alive || o.species.role === 'crab') continue;
+      const d = this.pos.distanceTo(o.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+
+    // The host is just another body in the water here.
+    const pd = ctx.playerAlive ? this.pos.distanceTo(ctx.playerPos) : Infinity;
+    if (pd < bestD && pd < FRENZY_SENSE) {
+      this.huntPlayer = true;
+      best = null;
+      _desired.subVectors(ctx.playerPos, this.pos);
+    } else if (best) {
+      this.target = best;
+      _desired.subVectors(best.pos, this.pos);
+    } else {
+      // Nothing in reach — thrash toward the field's heart and find something.
+      if (ctx.fieldPos) _desired.subVectors(ctx.fieldPos, this.pos);
+      else _desired.set(Math.sin(this.wanderAngle), 0, Math.cos(this.wanderAngle));
+    }
+
+    if (_desired.lengthSq() > 1e-6) _desired.normalize();
+    else _desired.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    this.desiredDir.copy(_desired);
+    this.desiredSpeed = this.species.maxSpeed * FRENZY_SPEED;
+  }
+
+  /** Maul whatever the frenzy is charging (creature or host). Real, resolvable damage. */
+  private frenzyBite(ctx: EcoContext, dt: number): void {
+    this.frenzyBiteCd -= dt;
+    if (this.frenzyBiteCd > 0) return;
+
+    const t = this.target;
+    if (t && t.alive) {
+      if (this.pos.distanceTo(t.pos) < this.radius + t.radius + 1.2) {
+        t.takeDamage(this.length * FRENZY_DMG_PER_LEN);
+        t.enterFrenzy(6); // being bitten drags the victim into the brawl too
+        this.frenzyBiteCd = FRENZY_BITE_CD;
+        this.hunger = Math.max(0, this.hunger - 0.4);
+      }
+      return;
+    }
+    if (this.huntPlayer && ctx.playerAlive) {
+      // Reach is generous (this is a mob, not a duel) but the host's own damage
+      // i-frames cap how fast a crowd can actually chew through it.
+      const gape = this.radius + ctx.playerLength * 0.5 + 1.6;
+      if (this.pos.distanceTo(ctx.playerPos) < gape) {
+        ctx.hitPlayer(this.length * FRENZY_PLAYER_DMG_PER_LEN);
+        this.frenzyBiteCd = FRENZY_BITE_CD;
+      }
+    }
   }
 
   private fishThink(ctx: EcoContext, dt: number): void {
@@ -259,16 +383,38 @@ export class Creature {
     // Normal predators hunt the host on sight. The apex (shark) does NOT — it
     // minds its own business, hunting other fish, and only turns on the host once
     // the host has attacked it (provokedT), then chases for a while.
+    // Carrier garrison (Phase 12): the relay's aura enrages the predators holding
+    // station around it. An enraged predator will go for the host regardless of
+    // size or provocation — that pressure IS the encounter's defence, in place of
+    // the entity's own minions (moved to a later phase).
+    let enraged = false;
+    if (ctx.carrierPos && sp.role === 'predator') {
+      const dc = this.pos.distanceTo(ctx.carrierPos);
+      if (dc < ctx.carrierAuraR) {
+        enraged = ctx.playerInAura;
+        // Leash: hold station near the relay rather than wandering off the fight.
+        if (dc > ctx.carrierAuraR * 0.62) {
+          _tmp2.subVectors(ctx.carrierPos, this.pos).normalize();
+          _desired.addScaledVector(_tmp2, 1.2);
+        }
+      }
+    }
     const canEatPlayer =
       ctx.playerAlive &&
       sp.role === 'predator' &&
-      this.length >= ctx.playerLength * EAT_SIZE_RATIO &&
-      (!sp.apex || this.provokedT > 0);
+      (enraged || this.length >= ctx.playerLength * EAT_SIZE_RATIO) &&
+      (!sp.apex || enraged || this.provokedT > 0);
     // The host is a juicy target: hunted when close (<14 m) or nearly as near as
     // the closest fish prey, so lingering next to a predator gets you bitten even
     // in a crowd — but you're fast enough to dash away.
-    if (canEatPlayer && wantsPrey && playerDist < sp.senseRadius &&
-        (playerDist < 14 || playerDist < preyDist + 6)) {
+    // An enraged garrison predator hunts on sight, hungry or not, from further out.
+    const huntReach = enraged ? sp.senseRadius * 1.5 : sp.senseRadius;
+    if (
+      canEatPlayer &&
+      (wantsPrey || enraged) &&
+      playerDist < huntReach &&
+      (enraged || playerDist < 14 || playerDist < preyDist + 6)
+    ) {
       this.huntPlayer = true;
       prey = null;
     }
@@ -340,6 +486,19 @@ export class Creature {
       if (pd < scareR && pd > 1e-3) {
         _desired.addScaledVector(_tmp, ((scareR - pd) / (pd * scareR)) * 2.0);
         boost = Math.max(boost, 1.4);
+      }
+    }
+
+    // Dead Signal Field (Phase 13): the collapse draws the local ecosystem in.
+    // Only a pull — the actual frenzy is switched on by the Ecosystem's director
+    // once a creature is inside, so the convergence reads as curiosity turning to
+    // violence rather than everything teleporting into a brawl.
+    if (ctx.fieldPos) {
+      _tmp.subVectors(ctx.fieldPos, this.pos);
+      const fd = _tmp.length();
+      if (fd < ctx.fieldPullR && fd > 1e-3) {
+        _desired.addScaledVector(_tmp, 1.6 / fd);
+        boost = Math.max(boost, 1.3);
       }
     }
 
@@ -514,9 +673,16 @@ export class Creature {
     this.pos.addScaledVector(this.vel, dt);
 
     this.resolveCollisions(ctx);
-    this.tryEat();
-    if (this.species.apex) this.apexSweepEat(ctx); // devours anything in its path
-    this.strikePlayer(ctx, dt);
+    if (this.frenzyT > 0) {
+      // In a frenzy nothing is swallowed whole — creatures tear at each other and
+      // leave weakened survivors, which is what makes the field worth entering.
+      this.frenzyT -= dt;
+      this.frenzyBite(ctx, dt);
+    } else {
+      this.tryEat();
+      if (this.species.apex) this.apexSweepEat(ctx); // devours anything in its path
+      this.strikePlayer(ctx, dt);
+    }
     if (this.hpBarTimer > 0) this.hpBarTimer -= dt;
     if (this.provokedT > 0) this.provokedT -= dt;
     this.orient(dt);

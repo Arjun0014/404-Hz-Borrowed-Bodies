@@ -315,6 +315,149 @@ export class Sfx {
     }
   }
 
+  // ---- Signal Carrier + Dead Signal Field (Phases 12–13) --------------------
+
+  /**
+   * The Carrier's beacon ping — a deep two-tone sonar pulse. This is how the
+   * player *finds* the thing: it carries much further than the beacon glow, so
+   * hearing it get louder is the discovery mechanic.
+   * @param proximity01 0 (inaudible, far away) → 1 (right on top of it)
+   */
+  carrierPulse(proximity01: number): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const p = Math.max(0, Math.min(1, proximity01));
+    if (p < 0.02) return;
+    const t = ac.currentTime;
+    // Two stacked sines a fifth apart, filtered dark — reads as "big and organic"
+    // rather than a beep. The upper partial only opens up when you're close.
+    const ping = (freq: number, at: number, gain: number, dur: number): void => {
+      const osc = ac.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, at);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.72, at + dur);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), at + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      osc.connect(g).connect(this.master!);
+      osc.start(at);
+      osc.stop(at + dur + 0.05);
+    };
+    const vol = 0.06 + p * p * 0.3; // squared, so it swells sharply on approach
+    ping(74, t, vol, 1.1);
+    ping(111, t + 0.14, vol * 0.55 * p, 0.8);
+  }
+
+  /** A signal node pops — a bright shatter over a sub thump. */
+  carrierNodeBreak(): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    // Shatter: filtered noise burst.
+    const len = Math.floor(ac.sampleRate * 0.4);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.5);
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(3200, t);
+    bp.frequency.exponentialRampToValueAtTime(900, t + 0.35);
+    bp.Q.value = 1.4;
+    const g = ac.createGain();
+    g.gain.value = 0.42;
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    // Sub thump underneath so it lands with weight.
+    const osc = ac.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.exponentialRampToValueAtTime(38, t + 0.4);
+    const g2 = ac.createGain();
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.exponentialRampToValueAtTime(0.34, t + 0.02);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+    osc.connect(g2).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.5);
+  }
+
+  /** The Carrier dies — a long collapsing roar as the entity loses a relay. */
+  carrierDeath(): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    // Three detuned saws collapsing over two seconds, through a closing filter.
+    const filt = ac.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.setValueAtTime(3800, t);
+    filt.frequency.exponentialRampToValueAtTime(120, t + 2.0);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.42, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
+    filt.connect(g).connect(this.master);
+    for (const f of [196, 148, 99]) {
+      const osc = ac.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.18, t + 2.0);
+      osc.connect(filt);
+      osc.start(t);
+      osc.stop(t + 2.3);
+    }
+    // A rising shimmer on top — the signal releasing its grip.
+    const up = ac.createOscillator();
+    up.type = 'triangle';
+    up.frequency.setValueAtTime(220, t);
+    up.frequency.exponentialRampToValueAtTime(1800, t + 1.4);
+    const gu = ac.createGain();
+    gu.gain.setValueAtTime(0.0001, t);
+    gu.gain.exponentialRampToValueAtTime(0.16, t + 0.3);
+    gu.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+    up.connect(gu).connect(this.master);
+    up.start(t);
+    up.stop(t + 1.7);
+  }
+
+  // Dead Signal Field ambience: a hollow, detuned shimmer that says "the entity
+  // cannot reach you here". Persistent like the connection drone; call every
+  // frame with the field strength at the player (0 = outside).
+  private fieldOscA: OscillatorNode | null = null;
+  private fieldOscB: OscillatorNode | null = null;
+  private fieldGain: GainNode | null = null;
+  private fieldFilter: BiquadFilterNode | null = null;
+
+  setFieldTone(strength01: number): void {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    const t = ac.currentTime;
+    if (!this.fieldGain) {
+      this.fieldGain = ac.createGain();
+      this.fieldGain.gain.value = 0.0001;
+      this.fieldFilter = ac.createBiquadFilter();
+      this.fieldFilter.type = 'bandpass';
+      this.fieldFilter.frequency.value = 640;
+      this.fieldFilter.Q.value = 2.2;
+      this.fieldOscA = ac.createOscillator();
+      this.fieldOscA.type = 'triangle';
+      this.fieldOscA.frequency.value = 318;
+      this.fieldOscB = ac.createOscillator();
+      this.fieldOscB.type = 'triangle';
+      this.fieldOscB.frequency.value = 322.9; // ~5 Hz beating — an unstable, dead tone
+      this.fieldOscA.connect(this.fieldFilter);
+      this.fieldOscB.connect(this.fieldFilter);
+      this.fieldFilter.connect(this.fieldGain).connect(this.master);
+      this.fieldOscA.start();
+      this.fieldOscB.start();
+    }
+    const s = Math.max(0, Math.min(1, strength01));
+    this.fieldGain.gain.setTargetAtTime(Math.max(0.0001, s * 0.15), t, 0.5);
+    this.fieldFilter?.frequency.setTargetAtTime(500 + s * 500, t, 0.5);
+  }
+
   /** The host dies — a low synth groan into rumble. */
   death(): void {
     const ac = this.ac();

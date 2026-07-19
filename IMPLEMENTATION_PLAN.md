@@ -360,10 +360,15 @@ Phase 0 (this document) omitted. For every phase: objective, dependencies, syste
 - **Risks**: scope (4 movement models). **Fallback**: ship phase with 3 hosts (starter/defensive/predator), Inkfin follows in 14.
 - **Files**: `src/data/species/*`, `src/systems/abilities`, camera profiles.
 
-### Phase 11 — Cthulhu Minions and Connection Attacks
+### Phase 15b — Cthulhu Minions and Connection Attacks (moved from Phase 11)
+
+> **Reordered.** Minions are a deeper-stage pressure and now run after the Drowned
+> Garden (Phase 15), not inside the Shallow Veil. Phases 12–14 shipped with the
+> Carrier's aura enraging **wild predators** as the garrison; that aura hook
+> (`SignalCarrier.auraAggro` → `EcoContext.carrier*`) is the seam minions plug into.
 
 - **Objective**: enemies that attack the connection, not just health.
-- **Dependencies**: Phase 9.
+- **Dependencies**: Phase 15.
 - **Systems**: minion type A (melee "lamprey" — latches/hits → connection spike + minor damage), optional type B (ranged "tether drone" — beam that ticks connection while line-of-sight held), signal visual identity (emissive nerve/eye material — readable at distance, colour-blind safe), patrol/pursuit behaviour keyed to player connection level (higher connection → more attention), basic group coordination (share target, loose surround), spawn discipline (from cracks/deep edge, budgeted count).
 - **Work breakdown**: connection-damage channel in combat maths; minion AI profiles on the T2 framework; escalation curve (minion pressure grows with connection & time-in-zone — this is also the §15 anti-camping mechanism, wired here); telegraphs for connection attacks (must read differently from health damage).
 - **Assets — temp**: minion = altered neutral with strong emissive + FX. **User**: one minion rigged `.glb` (patrol/chase/attack/hit/stun/death), tether/projectile textures, minion audio (optional for mechanic approval).
@@ -377,8 +382,9 @@ Phase 0 (this document) omitted. For every phase: objective, dependencies, syste
 ### Phase 12 — Signal Carrier Encounter
 
 - **Objective**: the zone's protected high-health objective.
-- **Dependencies**: Phase 11.
-- **Systems**: Carrier entity (large, semi-stationary, pulsing beacon audible/visible through fog), staged damage states, minion garrison (patrol ring, reinforce on aggro within budget), Carrier local influence (aura: nearby minions buffed / player connection ticks faster near it — makes approach a decision), death event → hands off to Phase 13 field, encounter director (controls reinforcement waves within entity budget).
+- **Dependencies**: Phase 10. (Minions moved to 15b — the garrison is **wild predators
+  enraged by the Carrier's aura** instead: same tactical shape, no new entity class.)
+- **Systems**: Carrier entity (large, semi-stationary, pulsing beacon audible/visible through fog), staged damage states, predator garrison (aura-enraged wild predators hold station around it), Carrier local influence (aura: nearby minions buffed / player connection ticks faster near it — makes approach a decision), death event → hands off to Phase 13 field, encounter director (controls reinforcement waves within entity budget).
 - **Work breakdown**: Carrier `SpeciesDef` (class carrier, non-possessable); beacon (pulse light + sonar-ring FX + spatialised audio); damage-stage material/FX changes so progress reads without staring at a bar; garrison AI hooks; performance test with full encounter + ambient.
 - **Assets — temp**: Carrier blockout (large organic proxy w/ pulsing emissive), pulse FX, beacon audio. **User**: Carrier `.glb` (jellyfish/organ/relay design, idle pulse + damage states if possible), emissive textures, beacon/damage/death audio.
 - **Placeholder strategy**: big pulsing proxy — importance reads through scale/light/sound, per ASSETS.md.

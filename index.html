@@ -17,7 +17,7 @@
     <div id="title" class="overlay hidden">
       <h1><span class="hz">404 Hz</span><span class="sub">Borrowed Bodies</span></h1>
       <p class="prompt">click to dive</p>
-      <p class="phase-tag">Phase 1 — Shallow Veil swimming prototype</p>
+      <p class="phase-tag">Phase 14 — Shallow Veil vertical slice</p>
     </div>
 
     <div id="resume-chip" class="hidden">click to resume control</div>
@@ -47,6 +47,26 @@
     </div>
     <div id="connection-warning" class="hidden">CONNECTION CRITICAL — POSSESS A FRESH BODY</div>
     <div id="connection-vignette"></div>
+
+    <!-- Signal Carrier: the zone objective. Boss bar (near) + tracker (far). -->
+    <div id="carrier-hud" class="hidden">
+      <div id="carrier-row">
+        <span id="carrier-name">SIGNAL CARRIER</span>
+        <span id="carrier-stage">INTACT</span>
+      </div>
+      <div id="carrier-bar"><div id="carrier-fill"></div></div>
+      <div id="carrier-nodes">◆ ◆ ◆  SHIELDED</div>
+    </div>
+    <div id="carrier-marker" class="hidden">◈ CARRIER</div>
+
+    <!-- Dead Signal Field: the collapse timer + whether you're inside it. -->
+    <div id="field-hud" class="hidden">
+      <div id="field-row">
+        <span id="field-name">DEAD SIGNAL FIELD</span>
+        <span id="field-state">COLLAPSING</span>
+      </div>
+      <div id="field-bar"><div id="field-fill"></div></div>
+    </div>
 
     <!-- Combat HUD -->
     <div id="damage-bars"></div>
@@ -83,6 +103,7 @@
     <div id="death-screen" class="overlay hidden">
       <div class="death-title">YOUR HOST HAS DIED</div>
       <div class="death-sub">the signal claims another body</div>
+      <div id="run-summary" class="hidden"></div>
       <p class="death-prompt">press <b>R</b> to begin a new run</p>
     </div>
 
@@ -91,6 +112,7 @@
         <div class="dp-title">DESCEND TO <span class="dp-target">THE DEEP</span>?</div>
         <div class="dp-warn">There is no return.</div>
         <div class="dp-rec">Recommended Dominance: <span class="dp-dom">Hunter</span></div>
+        <div class="dp-carrier hidden"></div>
         <div class="dp-keys"><b>E</b> descend &nbsp;·&nbsp; <b>Q</b> stay</div>
       </div>
     </div>

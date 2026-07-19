@@ -83,6 +83,17 @@ export class PlayerConnection {
     }
   }
 
+  /**
+   * Remove Connection directly — the Dead Signal Field's drain (Phase 13). This
+   * is the only relief that does not require a fresh body, which is precisely why
+   * the field is temporary and one-per-zone.
+   */
+  drain(amount: number): void {
+    if (amount <= 0) return;
+    this.value = Math.max(0, this.value - amount);
+    if (this.value < 1) this.wasFull = false;
+  }
+
   /** How much a possession of this species would reduce Connection right now. */
   freshness(speciesId: string): number {
     return 1 - (this.contamination.get(speciesId) ?? 0);

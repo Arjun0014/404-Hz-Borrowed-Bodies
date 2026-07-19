@@ -45,6 +45,8 @@ export class PlayerCombat {
   onDeath: () => void = () => {};
   onHit: () => void = () => {}; // took damage (screen shake)
   onFeed: (biomass: number) => void = () => {}; // ate/killed → grow
+  /** A bite landed on the Signal Carrier — drives its hit feedback (Phase 12). */
+  onCarrierHit: (nodeKilled: boolean, died: boolean) => void = () => {};
 
   private attackCd = 0;
   private attackActive = 0;
@@ -174,6 +176,12 @@ export class PlayerCombat {
       this.feedFlash = 1;
     }
     if (res.biomass > 0) this.onFeed(res.biomass); // eating grows the host
+    if (res.carrier) {
+      // Striking the relay is meaty but yields no meat — the Carrier is an
+      // objective, not food, so it never feeds growth or resonance.
+      this.camera.punch(res.carrier.nodeKilled ? 26 : 12);
+      this.onCarrierHit(res.carrier.nodeKilled, res.carrier.died);
+    }
   }
 
   takeDamage(dmg: number): void {

@@ -81,6 +81,15 @@ export class PlayerPossession {
   riskTarget: Creature | null = null;
   /** True when aiming at a takeable creature but resonance isn't charged yet. */
   needsCharge = false;
+  /**
+   * Extra snatch odds granted from outside — the Dead Signal Field sets this each
+   * frame (Phase 13: "possession may become easier or safer inside the field").
+   * Kept as a plain input rather than a field reference so possession stays
+   * unaware of what is being generous to it.
+   */
+  externalRiskBonus = 0;
+  /** True if the most recent takeover came from the risk path (for scoring). */
+  lastPossessionWasRisk = false;
 
   /** Fired when a takeover completes (host display name + species id). */
   onPossessed: (displayName: string, speciesId: string) => void = () => {};
@@ -227,6 +236,7 @@ export class PlayerPossession {
   private riskChance(c: Creature): number {
     const frac = this.requiredFrac(c); // the guaranteed-stun threshold (size + Dominance)
     if (c.health01 <= frac) return RISK_MAX_CHANCE; // already stun-ready — near certain
+    const bonus = this.externalRiskBonus; // dead-signal field makes the jump safer
     // Matchup ease: high for small/below-Dominance targets, low for big/tough ones.
     const matchup = clamp(
       (frac - POSSESS_MIN_FRAC) / (POSSESS_MAX_FRAC - POSSESS_MIN_FRAC),
@@ -235,7 +245,7 @@ export class PlayerPossession {
     );
     const weak = 1 - c.health01; // 0 (full HP) → 1 (near dead)
     const dom = this.dominance.rankIndex * RISK_DOM_WEIGHT;
-    const chance = RISK_BASE + matchup * RISK_MATCHUP_WEIGHT + weak * RISK_HEALTH_WEIGHT + dom;
+    const chance = RISK_BASE + matchup * RISK_MATCHUP_WEIGHT + weak * RISK_HEALTH_WEIGHT + dom + bonus;
     return clamp(chance, RISK_MIN_CHANCE, RISK_MAX_CHANCE);
   }
 
@@ -247,6 +257,7 @@ export class PlayerPossession {
     this.riskCd = RISK_COOLDOWN;
 
     if (Math.random() < chance) {
+      this.lastPossessionWasRisk = true; // set BEFORE takeOver — onPossessed reads it
       this.takeOver(target);
       this.onRiskResult(true, name);
       return;
@@ -301,6 +312,7 @@ export class PlayerPossession {
     this.channelT = 0;
     if (!target) return;
     this.resonance.spend(); // the jump costs the whole charge — go feed again
+    this.lastPossessionWasRisk = false;
     this.takeOver(target);
   }
 

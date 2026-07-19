@@ -853,6 +853,22 @@ export class ShallowVeil implements Zone {
     };
   }
 
+  /**
+   * The Signal Carrier hangs in open water just off the northern flank of the
+   * mid-shelf mesa at (-30, 55). Deliberately *beside* the mesa rather than on
+   * top of it: the summit only leaves ~13 m of water, which is not enough to
+   * hold the relay clear of both the seabed and the surface, whereas the flat at
+   * (-30, 95) gives a full 35 m column. The mesa still does the navigational
+   * work — it is the landmark you steer toward, and the relay resolves out of
+   * the fog beside it. Roughly 200 m from spawn and well off the line to the
+   * drop-off, so reaching it is a deliberate detour.
+   */
+  getCarrierAnchor(out: Vector3): Vector3 {
+    const x = -30;
+    const z = 95;
+    return out.set(x, this.terrain.heightAt(x, z), z);
+  }
+
   /** The player is out over the deep once they cross past the descent line. */
   isInDescentZone(pos: Vector3): boolean {
     return pos.x > WORLD.descentX;

@@ -539,41 +539,6 @@ The user approves the initial roster and individual host feel.
 
 ---
 
-# Phase 11 — Cthulhu Minions and Connection Attacks
-
-## Goal
-
-Introduce creatures whose primary purpose is to strengthen the ancient entity's connection.
-
-## Required player-facing outcome
-
-Connected minions can be visually identified, coordinate at a basic level, and increase connection through their attacks.
-
-## Include
-
-- at least one basic minion type;
-- one contrasting minion type if scope permits;
-- connection-damaging attacks;
-- patrol and pursuit behaviour;
-- relationship with player connection level;
-- visual signal identity;
-- basic group behaviour;
-- scalable AI complexity;
-- spawn and despawn discipline.
-
-## Verification focus
-
-- minions feel distinct from ordinary predators;
-- their attacks clearly affect connection;
-- they do not overwhelm the player through unfair crowding;
-- behaviour scales without damaging browser performance.
-
-## Approval gate
-
-The user approves minion pressure and readability.
-
----
-
 # Phase 12 — Signal Carrier Encounter
 
 ## Goal
@@ -715,6 +680,50 @@ The player descends into a visibly darker, denser ecosystem with new threats, ne
 ## Approval gate
 
 The user approves the Drowned Garden as a complete second stage.
+
+---
+
+# Phase 15b — Cthulhu Minions and Connection Attacks (moved from Phase 11)
+
+> **Reordered by design decision.** Minions are a *deeper-stage* pressure, not a
+> Shallow Veil one. The Shallow Veil must prove the core loop — hunt, grow, possess,
+> manage connection, kill a Carrier, survive the field, descend — on its own; adding
+> the entity’s own servants there crowded the first zone and pre-empted the escalation
+> the deeper zones are meant to deliver. This phase therefore runs AFTER the Drowned
+> Garden is standing. Phases 12–14 were built with **wild predators drawn by the
+> Carrier’s aura** as the garrison in place of minions; that hook (Carrier aura →
+> local aggression) is where minions slot in when this phase lands.
+
+## Goal
+
+Introduce creatures whose primary purpose is to strengthen the ancient entity's connection.
+
+## Required player-facing outcome
+
+Connected minions can be visually identified, coordinate at a basic level, and increase connection through their attacks.
+
+## Include
+
+- at least one basic minion type;
+- one contrasting minion type if scope permits;
+- connection-damaging attacks;
+- patrol and pursuit behaviour;
+- relationship with player connection level;
+- visual signal identity;
+- basic group behaviour;
+- scalable AI complexity;
+- spawn and despawn discipline.
+
+## Verification focus
+
+- minions feel distinct from ordinary predators;
+- their attacks clearly affect connection;
+- they do not overwhelm the player through unfair crowding;
+- behaviour scales without damaging browser performance.
+
+## Approval gate
+
+The user approves minion pressure and readability.
 
 ---
 

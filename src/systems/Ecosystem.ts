@@ -5,6 +5,8 @@ import { CreatureFactory, type CreatureInstance } from '../entities/CreatureFact
 import { SPECIES, speciesById, type CreatureSpecies, type PopEntry } from '../data/creatures';
 import { lengthAt, rollWildGrowth } from '../data/growth';
 import type { AssetLoader } from '../core/AssetLoader';
+import type { SignalCarrier, CarrierHitResult } from '../entities/SignalCarrier';
+import type { DeadSignalField } from './DeadSignalField';
 import type { CylinderCollider, PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
 
 export interface ZoneBinding {
@@ -36,6 +38,19 @@ const SPAWN_SAFE_SECONDS = 30;
 // So big fish are worth far more per chunk and much more whole — but riskier.
 const BITE_CHUNK = 0.4;
 const FINISH_BONUS = 1.0;
+
+// ---- Dead Signal Field frenzy director (Phase 13) ----
+// The field is the game's worst-case scene, so participation is explicitly
+// budgeted rather than "everything inside joins". Creatures nearest the player
+// are enrolled first, so the brawl the player can actually see is always full
+// while the crowd out in the fog stays cheap.
+const FRENZY_CAP = 30;
+/** Seconds of frenzy granted per enrolment; refreshed while a creature stays in. */
+const FRENZY_REFRESH = 3.0;
+/** How far outside the boundary the field's pull reaches, as a multiple of radius. */
+const FIELD_PULL_MULT = 2.1;
+/** Re-run the director every N frames (it is a full-population scan). */
+const DIRECTOR_STRIDE = 12;
 
 /** A coherent shoal: a roaming centre its members steer toward as one body. */
 interface School {
@@ -71,6 +86,18 @@ export class Ecosystem {
   onHitPlayer: (dmg: number) => void = () => {};
   /** Called when the player's bite kills a creature (for Dominance/score). */
   onPlayerKill: (c: Creature) => void = () => {};
+  /**
+   * The zone's Signal Carrier, if one is standing. The ecosystem owns the link so
+   * every attack path (bite, apex sweep, grouper inhale) resolves against it
+   * through the one bite function, and so its aura reaches creature AI.
+   */
+  carrier: SignalCarrier | null = null;
+  /** The active Dead Signal Field, if any — drives the frenzy director. */
+  field: DeadSignalField | null = null;
+  /** True while the host is inside the Carrier's aura (garrison trigger). */
+  private playerInAura = false;
+  /** How many creatures are currently frenzied (debug/HUD readout). */
+  frenzyCount = 0;
   private playerThreatT = 0;
   private terrain: TerrainLike | null = null;
   private colliders: CylinderCollider[] = [];
@@ -84,6 +111,8 @@ export class Ecosystem {
   private readonly _playerPos = new Vector3();
   private readonly _biteVec = new Vector3();
   private readonly _nbr: number[] = [];
+  /** Reused participant buffer for the frenzy director (no per-call allocation). */
+  private readonly _frenzyBuf: number[] = [];
   private readonly ctx: EcoContext;
 
   constructor(loader: AssetLoader, scene: Scene) {
@@ -106,6 +135,12 @@ export class Ecosystem {
       spawnSafeActive: false,
       spawnSafe: this._spawnSafe,
       spawnSafeR: SPAWN_SAFE_R,
+      carrierPos: null,
+      carrierAuraR: 0,
+      playerInAura: false,
+      fieldPos: null,
+      fieldR: 0,
+      fieldPullR: 0,
     };
   }
 
@@ -127,6 +162,11 @@ export class Ecosystem {
   /** Swap to a new zone: dispose the old population, build the new one. */
   bindZone(b: ZoneBinding): void {
     this.despawnAll();
+    // Carrier + field are zone-scoped; GameApp owns their lifetime and re-links
+    // them after the new zone is standing.
+    this.carrier = null;
+    this.field = null;
+    this.frenzyCount = 0;
     this.terrain = b.terrain;
     this.colliders = b.colliders;
     this.bounds = b.bounds;
@@ -297,6 +337,19 @@ export class Ecosystem {
     if (this.spawnSafeT > 0) this.spawnSafeT -= dt;
     this.ctx.spawnSafeActive = this.spawnSafeT > 0;
 
+    // Publish the Carrier's aura + the field's boundary into the AI context.
+    const carrier = this.carrier?.alive ? this.carrier : null;
+    this.playerInAura = !!carrier && carrier.auraStrength(this._playerPos) > 0;
+    this.ctx.carrierPos = carrier ? carrier.pos : null;
+    this.ctx.carrierAuraR = carrier ? carrier.auraRadius : 0;
+    this.ctx.playerInAura = this.playerInAura;
+    const field = this.field?.active ? this.field : null;
+    this.ctx.fieldPos = field ? field.pos : null;
+    this.ctx.fieldR = field ? field.radius : 0;
+    this.ctx.fieldPullR = field ? field.radius * FIELD_PULL_MULT : 0;
+    if (field && this.frame % DIRECTOR_STRIDE === 0) this.driveFrenzy(field);
+    else if (!field) this.frenzyCount = 0;
+
     // Roam the shoals (staggered — a couple per frame is plenty).
     for (let i = 0; i < this.schools.length; i++) {
       if ((this.frame + i) % 4 === 0) this.updateSchool(this.schools[i], dt * 4);
@@ -344,6 +397,65 @@ export class Ecosystem {
         c.move(this.ctx, dt * 8);
       }
     }
+  }
+
+  /**
+   * The frenzy director. Enrols creatures standing inside the field into the
+   * brawl, capped at FRENZY_CAP and prioritised by distance to the player, so the
+   * chaos is always densest where it can be seen and the worst case stays bounded
+   * no matter how many creatures drift in. Runs on a stride, not every frame.
+   */
+  private driveFrenzy(field: DeadSignalField): void {
+    const r2 = field.radius * field.radius;
+    // Collect who is inside, cheapest first: one squared-distance test each.
+    // The buffer is reused — this runs during the heaviest scene in the game and
+    // has no business generating garbage.
+    const inside = this._frenzyBuf;
+    inside.length = 0;
+    for (let i = 0; i < this.creatures.length; i++) {
+      const c = this.creatures[i];
+      if (!c.alive || c.species.role === 'crab') continue;
+      if (c.pos.distanceToSquared(field.pos) < r2) inside.push(i);
+    }
+    // Nearest to the player wins a slot — the visible fight is the one that matters.
+    if (inside.length > FRENZY_CAP) {
+      const p = this._playerPos;
+      inside.sort(
+        (a, b) =>
+          this.creatures[a].pos.distanceToSquared(p) - this.creatures[b].pos.distanceToSquared(p),
+      );
+      inside.length = FRENZY_CAP;
+    }
+    for (const i of inside) this.creatures[i].enterFrenzy(FRENZY_REFRESH);
+    this.frenzyCount = inside.length;
+  }
+
+  /**
+   * Seed the Carrier's garrison: relocate the nearest wild predators into a ring
+   * around it so the relay is defended from the moment the player finds it,
+   * instead of only once the ecosystem happens to drift over. Called once, when
+   * the Carrier is placed.
+   */
+  garrisonCarrier(at: Vector3, count: number): number {
+    if (!this.terrain || !this.area) return 0;
+    // Prefer the predators already furthest from the player, so seeding the
+    // garrison never yanks a fish out from under them mid-fight.
+    const cands = this.creatures
+      .filter((c) => c.alive && c.species.role === 'predator')
+      .sort((a, b) => b.pos.distanceToSquared(this._playerPos) - a.pos.distanceToSquared(this._playerPos))
+      .slice(0, count);
+    cands.forEach((c, i) => {
+      const a = (i / Math.max(1, cands.length)) * Math.PI * 2 + Math.random() * 0.5;
+      const r = 22 + Math.random() * 24;
+      const x = clamp(at.x + Math.cos(a) * r, this.area!.minX, this.area!.maxX);
+      const z = clamp(at.z + Math.sin(a) * r, this.area!.minZ, this.area!.maxZ);
+      const gy = this.terrain!.heightAt(x, z);
+      const y = this.clampY(Math.max(gy + c.length * 0.6 + 2, at.y - 8 + Math.random() * 16));
+      c.pos.set(x, y, z);
+      c.preferredY = y;
+      c.vel.set(0, 0, 0);
+    });
+    return cands.length;
   }
 
   /** Roam a shoal's centre freely across the shelf (it does NOT follow the player). */
@@ -409,12 +521,22 @@ export class Ecosystem {
     eatMaxLen: number,
     damage: number,
     alreadyHit: Set<Creature>,
-  ): { hit: number; eaten: number; killed: number; biomass: number } {
+  ): { hit: number; eaten: number; killed: number; biomass: number; carrier: CarrierHitResult | null } {
     let hit = 0;
     let eaten = 0;
     let killed = 0;
     let biomass = 0; // total body length consumed, for growth
-    if (!this.terrain) return { hit, eaten, killed, biomass };
+    // The Signal Carrier shares the bite's geometry, so every attack the player
+    // has — bite, apex sweep, grouper inhale — damages it without special cases.
+    let carrier: CarrierHitResult | null = null;
+    if (this.carrier?.alive) {
+      const r = this.carrier.tryHit(origin, forward, reach, minDot, damage);
+      if (r.hit) {
+        carrier = r;
+        hit++;
+      }
+    }
+    if (!this.terrain) return { hit, eaten, killed, biomass, carrier };
     const ids = this.queryNeighbors(origin.x, origin.z, reach + 3);
     for (let i = 0; i < ids.length; i++) {
       const c = this.creatures[ids[i]];
@@ -441,7 +563,7 @@ export class Ecosystem {
       if (died) biomass += c.length * FINISH_BONUS;
     }
     if (hit > 0) this.playerThreatT = 2.5; // nearby prey flee the aggressor
-    return { hit, eaten, killed, biomass };
+    return { hit, eaten, killed, biomass, carrier };
   }
 
   /** Startle nearby prey away from the host (a failed risk-snatch alerts the sea). */

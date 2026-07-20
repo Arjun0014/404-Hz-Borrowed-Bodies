@@ -856,18 +856,15 @@ export class ShallowVeil implements Zone {
   }
 
   /**
-   * TWO Signal Carriers on the shelf — clearing both is the zone objective.
-   * The first hangs off the northern flank of the mid-shelf mesa at (-30, 95),
-   * where a full 35 m water column holds it clear of seabed and surface; the
-   * second sits across the shelf toward the southern flats, so finding and
-   * clearing them is a deliberate sweep of the sea rather than one detour.
+   * ONE Signal Carrier on the shelf — the first level fields a single relay. It
+   * hangs off the northern flank of the mid-shelf mesa at (-30, 95), where a full
+   * 35 m water column holds it clear of both seabed and surface. Deeper zones
+   * field more (the Drowned Garden has two), and any you leave alive follow you.
    */
   getCarrierAnchors(): Vector3[] {
-    const spots: [number, number][] = [
-      [-30, 95],
-      [25, -80],
-    ];
-    return spots.map(([x, z]) => new Vector3(x, this.terrain.heightAt(x, z), z));
+    const x = -30;
+    const z = 95;
+    return [new Vector3(x, this.terrain.heightAt(x, z), z)];
   }
 
   /** Starter relays are small and low-health — a beatable first objective. */

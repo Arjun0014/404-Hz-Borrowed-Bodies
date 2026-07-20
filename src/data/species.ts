@@ -152,15 +152,15 @@ export const DARTFISH: SpeciesDef = {
   flipForward: false,
   movement: {
     maxSpeed: 6.2,
-    // Sprint is punchier than before (1.9 → 2.2) so a dash genuinely rips through
-    // the water rather than nudging you a little faster. Bounded by the new
-    // stamina bar so it stays a resource, not a permanent cruise speed.
-    dashMultiplier: 2.2,
+    // Sprint really rips now — ~3x cruise speed (6.2 → 18.6 m/s), a proper burst
+    // through the water. The energy bar is generous (dashStamina 16 s) so a sprint
+    // lasts and lasts instead of dying in a second, but it is still a resource.
+    dashMultiplier: 3.0,
     accel: 22,
     drag: 1.9,
     turnRate: 3.6,
     verticalFactor: 0.85,
-    dashStamina: 3.2,
+    dashStamina: 16,
     dashRegen: 0.5,
   },
   camera: {
@@ -206,12 +206,12 @@ export const TUNA: SpeciesDef = {
   flipForward: false,
   movement: {
     maxSpeed: 8.5,
-    dashMultiplier: 2.0,
+    dashMultiplier: 2.8,
     accel: 16,
     drag: 1.4,
     turnRate: 2.2,
     verticalFactor: 0.6,
-    dashStamina: 4.5,
+    dashStamina: 22,
     dashRegen: 0.4,
   },
   camera: {
@@ -344,14 +344,15 @@ function genericIdentity(role: CreatureSpecies['role']): string {
 export function hostProfileFromCreature(sp: CreatureSpecies): SpeciesDef {
   const base = sp.baseLength;
   const curated = ROSTER[sp.id];
-  // Per-body sprint stamina: apex hunters have a long, fast-recovering sprint;
-  // a heavy crab or a broad forager tires quickly. This is the "shark has more
-  // energy, fat creatures less" rule expressed off the creature's own role.
-  const dashStamina = sp.role === 'crab' ? 1.6
-    : sp.apex ? 5.0
-    : sp.role === 'predator' ? 4.0
-    : sp.role === 'forager' ? 2.8
-    : 3.4; // prey
+  // Per-body sprint stamina (seconds of continuous sprint): apex hunters have a
+  // long, fast-recovering sprint; a heavy crab or a broad forager tires quicker.
+  // This is the "shark has more energy, fat creatures less" rule off the role —
+  // all generous now, so no host's sprint dies in a second.
+  const dashStamina = sp.role === 'crab' ? 8
+    : sp.apex ? 24
+    : sp.role === 'predator' ? 20
+    : sp.role === 'forager' ? 14
+    : 17; // prey
   const dashRegen = sp.role === 'crab' ? 0.28 : sp.apex ? 0.4 : 0.42;
   const base_profile: SpeciesDef = {
     id: sp.id,
@@ -361,7 +362,7 @@ export function hostProfileFromCreature(sp: CreatureSpecies): SpeciesDef {
     flipForward: sp.flipForward,
     movement: {
       maxSpeed: sp.maxSpeed,
-      dashMultiplier: 1.95,
+      dashMultiplier: 2.8,
       accel: sp.accel,
       drag: sp.drag,
       turnRate: sp.turnRate,

@@ -85,11 +85,11 @@ const LOCK_CONE = 0.3; // target must be within this view-cone of the aim to acq
 // Carriers are big landmarks — lockable (and held) from much further than a fish.
 const CARRIER_LOCK_RANGE = 150;
 
-// Signal Carrier → Connection coupling (point 7). Every carrier still ALIVE in the
-// zone speeds the entity's grip up; killing one permanently slows it for the rest
-// of the run — so clearing every relay each level is how you win ground against it.
-const CARRIER_PRESSURE = 0.35; // per living carrier, added to the rise multiplier
-const CARRIER_RELIEF_STEP = 0.12; // permanent rise slowdown gained per carrier killed
+// Signal Carrier → Connection coupling. Every carrier still ALIVE speeds the
+// entity's grip up — those in the current zone PLUS any you left un-killed in
+// EARLIER zones (they carry forward; future zones never count). Killing one simply
+// removes its share of the pressure, which is why clearing each level matters.
+const CARRIER_PRESSURE = 0.175; // per living carrier, added to the rise multiplier
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -137,6 +137,9 @@ export class GameApp {
   private readonly carrierColliders: CylinderCollider[] = [];
   /** How many carriers this zone started with (for the "N left" objective read). */
   private carrierTotalThisZone = 0;
+  /** Carriers left ALIVE in earlier zones — their Connection pressure carries
+   *  forward for the rest of the run (you can never go back to kill them). */
+  private carriedOverCarriers = 0;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
@@ -288,9 +291,15 @@ export class GameApp {
     // Blood, gore, and the clouds they leave. Lives on the scene, not the zone,
     // so it survives descents and keeps running through a zone swap.
     this.blood = new BloodFx(this.scene);
-    // The frenzy-eat cutaway reuses that blood layer and takes over the camera
-    // while it plays (see tick()).
-    this.cinematic = new KillCinematic(this.playerCamera.camera, this.fish, this.blood, this.sfx);
+    // The frenzy-eat cutaway reuses that blood layer, and drives the host + camera
+    // forward while it plays (see tick()).
+    this.cinematic = new KillCinematic(
+      this.playerCamera.camera,
+      this.fish,
+      this.controller,
+      this.blood,
+      this.sfx,
+    );
 
     // Seabed forest: load flora models once, then scatter them on this zone
     // (before the ecosystem, so big-coral colliders are in place for the fish).
@@ -746,22 +755,20 @@ export class GameApp {
     if (!this.connection) return;
     if (this.started && !dead) {
       // Per-host signal cost: a shark draws the entity far faster than a quiet
-      // crab. Every carrier still ALIVE in the zone piles on a flat pressure (so
-      // leaving relays standing is dangerous), and standing in the nearest one's
-      // aura multiplies it again — approaching a relay is a real decision. Carrier
-      // KILLS meanwhile bank permanent relief inside PlayerConnection.reliefFactor.
+      // crab. Every carrier still ALIVE piles on a flat pressure — the ones in this
+      // zone PLUS any left un-killed in earlier zones — so leaving relays standing
+      // is dangerous and stacks level to level. Standing in the nearest one's aura
+      // multiplies it again. Killing a carrier removes its share immediately.
       const near = this.nearestCarrier(this.controller.pos);
+      const totalCarriers = this.carriedOverCarriers + this.livingCarriers;
       const connMult =
         this.fish.species.connectionMult *
-        (1 + this.livingCarriers * CARRIER_PRESSURE) *
+        (1 + totalCarriers * CARRIER_PRESSURE) *
         (near ? near.connectionMultAt(this.controller.pos) : 1);
       this.connection.update(dt, this.fish.length, connMult);
-      // Resonance also trickles up over time, paced to the Connection rise (relief
-      // included), so the means to escape builds alongside the pressure.
-      this.resonance.tickPassive(
-        dt,
-        PlayerConnection.riseRate(this.fish.length, connMult) * this.connection.reliefFactor,
-      );
+      // Resonance also trickles up over time, paced to the Connection rise, so the
+      // means to escape builds alongside the pressure.
+      this.resonance.tickPassive(dt, PlayerConnection.riseRate(this.fish.length, connMult));
     }
     if (!this.started) return;
 
@@ -882,7 +889,7 @@ export class GameApp {
     const c = this.nearestCarrier(this.controller.pos);
     if (c && beat('carrier',
       this.controller.pos.distanceTo(c.pos) < CARRIER_TRACK_RANGE,
-      'Signal Carriers are broadcasting across this level. Lock on and DASH-BITE them — clearing every one weakens the entity for good.',
+      'Lock on to a Signal Carrier and DASH-BITE it. Kill every relay in a level before you descend — any you leave alive keep dragging the entity onto you.',
       6.5)) return;
 
     // Only worth saying once they are genuinely in trouble.
@@ -1490,9 +1497,8 @@ export class GameApp {
     this.triggerShake();
     this.ecosystem.alertPrey();
 
-    // Killing a relay permanently loosens the entity's grip — the run-long payoff
-    // for clearing carriers (point 7), on top of the temporary field drain.
-    this.connection?.weaken(CARRIER_RELIEF_STEP);
+    // Killing the relay removes its share of the Connection pressure straight away
+    // (the rise multiplier reads livingCarriers each frame), on top of the field.
 
     // Drop the dead carrier's collider so its faded corpse leaves no invisible wall.
     const cols = this.zones.current.colliders;
@@ -1524,8 +1530,8 @@ export class GameApp {
     );
     this.showHint(
       remaining > 0
-        ? 'A DEAD SIGNAL FIELD opens over the corpse — the entity cannot hold you inside it. One relay down; find the rest.'
-        : 'Every relay in this level is dead. The signal is measurably weaker now, and it stays that way. Descend when ready.',
+        ? 'A DEAD SIGNAL FIELD opens over the corpse — the entity cannot hold you inside it. One relay down; clear the rest before you descend.'
+        : "Every relay in this level is dead — none of them will follow you down. Descend clean when you're ready.",
       7,
     );
   }
@@ -1589,7 +1595,7 @@ export class GameApp {
     const big = c.length >= hostLen; // as large or larger than the host
     const eatenWhole = c.length <= hostLen / EAT_SIZE_RATIO; // a clean full swallow
     if (!(big || (eatenWhole && Math.random() < 0.12))) return;
-    if (this.cinematic.trigger(this.controller.pos, c.pos, c.length, big)) {
+    if (this.cinematic.trigger(c.pos, c.length, big)) {
       this.combat.iframes(2.4); // no free hits while the camera is away
     }
   }
@@ -1636,8 +1642,8 @@ export class GameApp {
       if (pending > 0) {
         note.textContent =
           pending === 1
-            ? '1 Signal Carrier here is still broadcasting — clearing it weakens the entity for good. There is no return.'
-            : `${pending} Signal Carriers here are still broadcasting — clear them to weaken the entity for good. There is no return.`;
+            ? '1 Signal Carrier here is still broadcasting — leave it alive and its pull follows you down for the rest of the run. There is no return.'
+            : `${pending} Signal Carriers here are still broadcasting — any you leave alive keep pulling on you for the rest of the run. There is no return.`;
       }
     }
     el.classList.remove('hidden');
@@ -1658,6 +1664,9 @@ export class GameApp {
     if (this.transitioning) return;
     this.transitioning = true;
     this.cinematic?.cancel(); // don't carry a cutaway across a zone change
+    // Any carrier you leave ALIVE here follows you as permanent pressure — you can
+    // never come back to kill it. Banked before the zone (and its carriers) swap.
+    this.carriedOverCarriers += this.livingCarriers;
     this.hideDescentPrompt();
 
     const transEl = document.getElementById('transition')!;

@@ -112,11 +112,18 @@ export interface Zone {
    */
   getFloraArea(): PopulationArea | null;
   /**
-   * Where this zone's Signal Carrier stands (seabed height included), or null if
-   * the zone has no Carrier encounter. Zones choose their own landmark so the
-   * relay always sits somewhere worth swimming to.
+   * Where this zone's Signal Carriers stand (each with seabed height included).
+   * A zone may field several — clearing them all is the per-level objective — or
+   * none (return an empty array). Each landmark should sit somewhere worth
+   * swimming to. Returns fresh Vector3s (not a shared scratch), one per carrier.
    */
-  getCarrierAnchor(out: Vector3): Vector3 | null;
+  getCarrierAnchors(): Vector3[];
+  /**
+   * Per-zone Signal Carrier tuning: body `size` in metres and `health`. Smaller,
+   * lower-health relays in the starting sea; larger, tougher ones in the deep.
+   * Optional — a default is used when a zone with carriers doesn't specify.
+   */
+  getCarrierConfig?(): { size: number; health: number };
 
   /** Null when this zone has no further descent (dead-end / final). */
   getDescentInfo(): DescentInfo | null;

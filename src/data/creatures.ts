@@ -141,9 +141,13 @@ export const SPECIES: CreatureSpecies[] = [
     senseRadius: 28, schooling: false, hungerRate: 0.07, animSpeed: 1.0, procedural: false,
   },
   // ---- clownfish: now the shelf's fast hunting predator (see the swap above) ----
+  // wildMaxGrowth raised 0.32 → 0.45 so scattered clownfish come in a clear
+  // spread of sizes (a lean juvenile up to a hefty adult) rather than all looking
+  // the same — asked for alongside thinning their numbers in the starting sea.
+  // Kept below the old-shark range so the starter sea never grows a rare giant.
   {
     id: 'clownfish', displayName: 'Clownfish', modelUrl: clownFishUrl, baseLength: 3.2, baseHealth: 66,
-    wildMaxGrowth: 0.32, flipForward: false,
+    wildMaxGrowth: 0.45, flipForward: false,
     role: 'predator', maxSpeed: 8.6, accel: 24, drag: 1.4, turnRate: 3.0,
     senseRadius: 32, schooling: false, hungerRate: 0.08, animSpeed: 1.1, procedural: false,
   },
@@ -225,7 +229,14 @@ export const SHALLOW_VEIL_POP: PopEntry[] = [
   // individually, spread across the whole shelf. Every fish spawns at a random
   // (mostly small) size. Counts are deliberately lean for an open, uncrowded sea.
   { speciesId: 'fry', count: 36, schoolSize: 18 }, // 2 bait balls for the starter to eat
-  { speciesId: 'clownfish', count: 18, schoolSize: 9 }, // 2 shoals of the player's own kind
+  // The player IS a barracuda now, so the shelf should feel like home water:
+  // two proper shoals of your own kind (up from 4 lone fish), sizes varying
+  // within each shoal. This is the "more barracuda + a small school" ask.
+  { speciesId: 'barracuda', count: 16, schoolSize: 8 },
+  // Clownfish are the fast PREDATOR now — thinned right down (18 → 6) and left
+  // solitary so the starting sea isn't crowded with them, each rolling its own
+  // size off the raised wildMaxGrowth for a visible spread.
+  { speciesId: 'clownfish', count: 6 },
   { speciesId: 'angelfish', count: 16, schoolSize: 8 }, // 2 shoals of regal angelfish
   { speciesId: 'silverside', count: 24 }, // loose, spread out
   { speciesId: 'anchovy', count: 22 },
@@ -233,7 +244,6 @@ export const SHALLOW_VEIL_POP: PopEntry[] = [
   { speciesId: 'wrasse', count: 10 },
   { speciesId: 'angel', count: 8 },
   { speciesId: 'grouper', count: 6 },
-  { speciesId: 'barracuda', count: 4 },
   { speciesId: 'shark', count: 2 },
   { speciesId: 'crab', count: 8 },
 ];

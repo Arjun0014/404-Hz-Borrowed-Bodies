@@ -14,6 +14,7 @@ const UnderwaterShader = {
     tDiffuse: { value: null },
     uTime: { value: 0 },
     uSpeed: { value: 0 },
+    uSprint: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -26,6 +27,7 @@ const UnderwaterShader = {
     uniform sampler2D tDiffuse;
     uniform float uTime;
     uniform float uSpeed;
+    uniform float uSprint;
     varying vec2 vUv;
 
     // The composer renders to a LINEAR target, so this final pass must apply
@@ -87,6 +89,24 @@ const UnderwaterShader = {
       col *= mix(0.9, 1.0, vig);
       col = mix(col, col * vec3(0.78, 0.92, 1.05), (1.0 - vig) * 0.35);
 
+      // SPRINT rush. Three taps smeared radially inward read as water tearing
+      // past the edges of view — a real directional motion-blur streak, not a
+      // flat overlay. It only bites at the rim (edge) and only while sprinting
+      // (uSprint), so it sells speed without smearing what you're aiming at, and
+      // a faint rim-darkening tunnels the view forward.
+      float sprint = clamp(uSprint, 0.0, 1.0);
+      if (sprint > 0.001) {
+        float edge = smoothstep(0.12, 0.72, r);
+        float amt = sprint * edge * 0.05;
+        vec3 streak =
+          texture2D(tDiffuse, suv - radial * amt * 0.6).rgb +
+          texture2D(tDiffuse, suv - radial * amt * 1.2).rgb +
+          texture2D(tDiffuse, suv - radial * amt * 2.0).rgb;
+        streak *= 0.3333;
+        col = mix(col, streak, sprint * edge * 0.65);
+        col *= 1.0 - sprint * edge * 0.14;
+      }
+
       // Final output stage (replaces OutputPass): tone map, then to sRGB.
       col = linearToSRGB(acesTonemap(col));
       gl_FragColor = vec4(col, 1.0);
@@ -123,13 +143,18 @@ export class UnderwaterFx {
     this.syncSize(renderer);
   }
 
-  /** speed01 is 0..~1.9 (dashing pushes above 1). */
-  render(dt: number, speed01: number): void {
+  /**
+   * @param speed01 0..~2.2 overall swim speed (dashing pushes above 1) — drives the warp.
+   * @param sprint01 0..1 how hard the host is sprinting — drives the speed streaks.
+   */
+  render(dt: number, speed01: number, sprint01 = 0): void {
     this.time += dt;
     this.pass.uniforms.uTime.value = this.time;
-    // Smooth the speed input a touch so the warp eases in/out.
+    // Smooth both inputs a touch so the warp and streaks ease in/out.
     const cur = this.pass.uniforms.uSpeed.value as number;
     this.pass.uniforms.uSpeed.value = cur + (speed01 - cur) * Math.min(1, dt * 6);
+    const cs = this.pass.uniforms.uSprint.value as number;
+    this.pass.uniforms.uSprint.value = cs + (sprint01 - cs) * Math.min(1, dt * 7);
     this.composer.render();
   }
 

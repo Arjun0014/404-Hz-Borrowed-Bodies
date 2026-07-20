@@ -96,11 +96,11 @@ export class Ecosystem {
    */
   onBloodHit: (at: Vector3, scale: number, died: boolean) => void = () => {};
   /**
-   * The zone's Signal Carrier, if one is standing. The ecosystem owns the link so
-   * every attack path (bite, apex sweep, grouper inhale) resolves against it
-   * through the one bite function, and so its aura reaches creature AI.
+   * The zone's Signal Carriers (a zone may field several — the per-level objective
+   * is to clear them all). The ecosystem owns the link so combat can resolve the
+   * nearest one, and creature AI reads the nearest aura, without special cases.
    */
-  carrier: SignalCarrier | null = null;
+  carriers: SignalCarrier[] = [];
   /** The active Dead Signal Field, if any — drives the frenzy director. */
   field: DeadSignalField | null = null;
   /** True while the host is inside the Carrier's aura (garrison trigger). */
@@ -172,9 +172,9 @@ export class Ecosystem {
   /** Swap to a new zone: dispose the old population, build the new one. */
   bindZone(b: ZoneBinding): void {
     this.despawnAll();
-    // Carrier + field are zone-scoped; GameApp owns their lifetime and re-links
+    // Carriers + field are zone-scoped; GameApp owns their lifetime and re-links
     // them after the new zone is standing.
-    this.carrier = null;
+    this.carriers = [];
     this.field = null;
     this.frenzyCount = 0;
     this.terrain = b.terrain;
@@ -347,8 +347,8 @@ export class Ecosystem {
     if (this.spawnSafeT > 0) this.spawnSafeT -= dt;
     this.ctx.spawnSafeActive = this.spawnSafeT > 0;
 
-    // Publish the Carrier's aura + the field's boundary into the AI context.
-    const carrier = this.carrier?.alive ? this.carrier : null;
+    // Publish the nearest Carrier's aura + the field's boundary into the AI context.
+    const carrier = this.nearestCarrier(this._playerPos);
     this.playerInAura = !!carrier && carrier.auraStrength(this._playerPos) > 0;
     this.ctx.carrierPos = carrier ? carrier.pos : null;
     this.ctx.carrierAuraR = carrier ? carrier.auraRadius : 0;
@@ -504,6 +504,21 @@ export class Ecosystem {
   /** Read-only view of the population (for HP-bar rendering + possession targeting). */
   get list(): readonly Creature[] {
     return this.creatures;
+  }
+
+  /** The nearest still-living Signal Carrier to a point (aura + bite resolution). */
+  nearestCarrier(at: Vector3): SignalCarrier | null {
+    let best: SignalCarrier | null = null;
+    let bd = Infinity;
+    for (const c of this.carriers) {
+      if (!c.alive) continue;
+      const d = c.pos.distanceToSquared(at);
+      if (d < bd) {
+        bd = d;
+        best = c;
+      }
+    }
+    return best;
   }
 
   /**

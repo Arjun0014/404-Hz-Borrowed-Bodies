@@ -36,7 +36,9 @@ import { PlayerCamera } from '../player/PlayerCamera';
 import { Bubbles } from '../entities/Bubbles';
 import { UnderwaterFx } from '../render/UnderwaterFx';
 import { BloodFx } from '../render/BloodFx';
+import { KillCinematic } from '../render/KillCinematic';
 import { DARTFISH } from '../data/species';
+import { EAT_SIZE_RATIO } from '../data/creatures';
 import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
 import { PlayerCombat } from '../player/PlayerCombat';
@@ -59,9 +61,11 @@ const SPAWN = new Vector3();
 const LOCK_AIM = new Vector3();
 const LOCK_TO = new Vector3();
 const LOCK_PROJ = new Vector3();
-const CARRIER_ANCHOR = new Vector3();
 const BLOOD_DIR = new Vector3();
 const CARRIER_PROJ = new Vector3();
+
+/** Anything lockable: a creature OR a Signal Carrier (both carry a live world pos). */
+type LockTarget = { readonly pos: Vector3; readonly alive: boolean };
 
 // Signal Carrier HUD ranges.
 /** Within this distance the Carrier's health bar takes over the screen. */
@@ -78,6 +82,14 @@ const FIELD_KILL_DECAY = 0.45;
 const LOCK_RANGE = 60; // max acquire distance
 const LOCK_KEEP_RANGE = 78; // sticky: hold a target a bit past acquire range
 const LOCK_CONE = 0.3; // target must be within this view-cone of the aim to acquire
+// Carriers are big landmarks — lockable (and held) from much further than a fish.
+const CARRIER_LOCK_RANGE = 150;
+
+// Signal Carrier → Connection coupling (point 7). Every carrier still ALIVE in the
+// zone speeds the entity's grip up; killing one permanently slows it for the rest
+// of the run — so clearing every relay each level is how you win ground against it.
+const CARRIER_PRESSURE = 0.35; // per living carrier, added to the rise multiplier
+const CARRIER_RELIEF_STEP = 0.12; // permanent rise slowdown gained per carrier killed
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -101,6 +113,8 @@ export class GameApp {
   private bubbles!: Bubbles;
   private fx!: UnderwaterFx;
   private blood!: BloodFx;
+  /** Short frenzy-eat cutaway on big/lucky kills (Phase 16). */
+  private cinematic!: KillCinematic;
   private ecosystem!: Ecosystem;
   private flora!: Flora;
   private combat!: PlayerCombat;
@@ -111,24 +125,27 @@ export class GameApp {
   private connection!: PlayerConnection;
   private dominance!: Dominance;
   private score!: Score;
-  /** The zone's Signal Carrier (Phase 12) — null once destroyed or in a zone without one. */
-  private carrier: SignalCarrier | null = null;
-  /** The Dead Signal Field its death left behind (Phase 13). */
+  /** The zone's Signal Carriers (Phase 12; a zone may field several to clear). */
+  private carriers: SignalCarrier[] = [];
+  /** The Dead Signal Field a carrier death left behind (Phase 13). */
   private field: DeadSignalField | null = null;
-  /** One Carrier per zone per run: never rebuild one the player already killed. */
-  private carrierDownThisZone = false;
   /** Kills made inside the field this run — feeds the anti-farm yield decay. */
   private fieldKills = 0;
   /** True once the shared reef flora has been disposed (one-way, on descent). */
   private floraDisposed = false;
-  /** The Carrier's solid obstacle, pushed into the zone's collider array. */
-  private carrierCollider: CylinderCollider | null = null;
+  /** The carriers' solid obstacles, pushed into the zone's collider array. */
+  private readonly carrierColliders: CylinderCollider[] = [];
+  /** How many carriers this zone started with (for the "N left" objective read). */
+  private carrierTotalThisZone = 0;
   private readonly sfx = new Sfx();
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
   private spawnGrace = 0;
-  /** Current hold-RMB lock-on target (null when not locked on). */
+  /** Current hold-RMB lock-on target that can be POSSESSED (a creature only). */
   private lockedCreature: Creature | null = null;
+  /** The general lock-on target — a creature OR a Carrier — driving the camera,
+   *  reticle, and the bite-dash. lockedCreature is the possessable subset of it. */
+  private lockTarget: LockTarget | null = null;
 
   private started = false;
   private transitioning = false;
@@ -271,6 +288,9 @@ export class GameApp {
     // Blood, gore, and the clouds they leave. Lives on the scene, not the zone,
     // so it survives descents and keeps running through a zone swap.
     this.blood = new BloodFx(this.scene);
+    // The frenzy-eat cutaway reuses that blood layer and takes over the camera
+    // while it plays (see tick()).
+    this.cinematic = new KillCinematic(this.playerCamera.camera, this.fish, this.blood, this.sfx);
 
     // Seabed forest: load flora models once, then scatter them on this zone
     // (before the ecosystem, so big-coral colliders are in place for the fish).
@@ -312,7 +332,10 @@ export class GameApp {
     // Dominance: defeating creatures builds a persistent run-level rank.
     this.dominance = new Dominance(this.runState);
     this.score = new Score(this.runState);
-    this.ecosystem.onPlayerKill = (c) => this.recordKill(c);
+    this.ecosystem.onPlayerKill = (c) => {
+      this.recordKill(c);
+      this.maybeKillCinematic(c);
+    };
     // Blood follows the bite direction, so spray and chunks fly the way the
     // jaws were travelling rather than puffing symmetrically.
     this.ecosystem.onBloodHit = (at, scale, died) => {
@@ -358,9 +381,9 @@ export class GameApp {
     this.connection = new PlayerConnection();
     this.connection.onFull = () => this.onConnectionFull();
 
-    // Signal Carrier: the zone's objective. Built last, so its garrison can be
-    // seeded from an already-populated ecosystem.
-    await this.buildCarrier(zone);
+    // Signal Carriers: the zone's objective. Built last, so their garrisons can
+    // be seeded from an already-populated ecosystem.
+    await this.buildCarriers(zone);
 
     this.updateZoneTag();
 
@@ -430,9 +453,13 @@ export class GameApp {
     const zone = this.zones.current;
 
     const dead = this.combat?.dead ?? false;
+    // A kill cinematic (point 5) takes over the camera and freezes control for a
+    // beat and a half; while it plays we suspend possession, swimming, and the
+    // normal camera, but keep the world, blood, and FX running underneath it.
+    const cine = this.cinematic?.active ?? false;
     // Lock-on first, so possession can act on the currently targeted creature.
     this.updateLockOn();
-    if (!this.transitioning && this.started && !dead) {
+    if (!cine && !this.transitioning && this.started && !dead) {
       // Possession only ever acts on the locked-on target; while a takeover
       // channels, normal control is paused (the possession owns the body).
       this.possession.update(dt, this.lockedCreature);
@@ -453,20 +480,25 @@ export class GameApp {
 
     if (this.spawnGrace > 0) this.spawnGrace -= dt;
     // Predators may only hunt/bite the host once it is in control and past the
-    // post-spawn grace — no ambushes on the loading screen, mid-possession, or the
-    // instant you dive.
+    // post-spawn grace — no ambushes on the loading screen, mid-possession, mid
+    // cinematic, or the instant you dive.
     const combatActive =
-      this.started && !dead && !this.transitioning && !possessing && this.spawnGrace <= 0;
+      this.started && !dead && !this.transitioning && !possessing && !cine && this.spawnGrace <= 0;
 
-    const speed = this.transitioning || dead ? 0 : this.controller.speed01;
-    this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
+    const speed = this.transitioning || dead || cine ? 0 : this.controller.speed01;
+    if (cine) {
+      this.cinematic.update(dt); // owns the camera this frame
+    } else {
+      this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
+      this.cinematic.tickIdle(dt); // advance its cooldown
+    }
     zone.update(dt, this.playerCamera.camera, this.renderer);
     if (!this.floraDisposed) this.flora.update(dt);
-    this.sfx.setSwim(dead ? 0 : this.controller.speed01, this.controller.dashOutput > 0.25);
+    this.sfx.setSwim(dead || cine ? 0 : this.controller.speed01, this.controller.dashOutput > 0.25);
     if (!this.transitioning) {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
-      if (this.started && !possessing) this.combat.update(dt);
-      if (this.started && !possessing && !dead) {
+      if (this.started && !possessing && !cine) this.combat.update(dt);
+      if (this.started && !possessing && !dead && !cine) {
         // Q is "stay" while a descent prompt is up, so drop the ability tap then.
         if (this.promptShown) this.input.consumeAbility();
         else this.ability.update(dt);
@@ -477,6 +509,7 @@ export class GameApp {
       this.updateCarrierHud();
       this.updateFieldHud();
       this.updateCombatHud();
+      this.updateEnergyHud();
       this.updateGrowthHud();
       this.updateResonanceHud();
       this.updateAbilityHud();
@@ -503,7 +536,8 @@ export class GameApp {
     }
 
     this.blood.update(dt, this.playerCamera.camera.position);
-    this.fx.render(dt, speed);
+    // Sprint intensity drives the water-rush streaks in the post shader.
+    this.fx.render(dt, speed, this.transitioning || dead || cine ? 0 : this.controller.dashOutput);
     this.debug.update(
       dt,
       this.renderer,
@@ -537,6 +571,30 @@ export class GameApp {
     if (this.vignetteEl) {
       this.vignetteEl.style.opacity = String(Math.min(0.9, this.combat.hurtFlash * 0.9));
     }
+  }
+
+  // ---- sprint energy HUD ---------------------------------------------------
+
+  private energyBarEl: HTMLElement | null = null;
+  private energyFillEl: HTMLElement | null = null;
+
+  /**
+   * The sprint bar only wants to be seen while it matters. Its opacity comes
+   * straight from the controller's staminaShow (which snaps up on sprint and
+   * eases down when you let off), so it appears as you sprint and quietly fades
+   * away while it recharges — never sitting on screen the rest of the time.
+   */
+  private updateEnergyHud(): void {
+    if (!this.started) return;
+    this.energyBarEl ||= document.getElementById('energy-bar');
+    this.energyFillEl ||= document.getElementById('energy-fill');
+    if (!this.energyBarEl || !this.energyFillEl) return;
+    const show = this.combat?.dead ? 0 : this.controller.staminaShow;
+    this.energyBarEl.style.opacity = show.toFixed(2);
+    if (show <= 0.001) return; // hidden — no need to touch the fill
+    const s01 = this.controller.stamina01;
+    this.energyFillEl.style.width = `${Math.max(0, Math.min(1, s01)) * 100}%`;
+    this.energyFillEl.classList.toggle('low', s01 < 0.25);
   }
 
   private triggerShake(): void {
@@ -687,16 +745,23 @@ export class GameApp {
   private updateConnection(dt: number, dead: boolean): void {
     if (!this.connection) return;
     if (this.started && !dead) {
-      // Per-host signal cost: a shark draws the entity far faster than a quiet crab.
-      // Standing in the Carrier's aura multiplies it again — that is what makes
-      // approaching the relay a decision rather than a formality.
+      // Per-host signal cost: a shark draws the entity far faster than a quiet
+      // crab. Every carrier still ALIVE in the zone piles on a flat pressure (so
+      // leaving relays standing is dangerous), and standing in the nearest one's
+      // aura multiplies it again — approaching a relay is a real decision. Carrier
+      // KILLS meanwhile bank permanent relief inside PlayerConnection.reliefFactor.
+      const near = this.nearestCarrier(this.controller.pos);
       const connMult =
         this.fish.species.connectionMult *
-        (this.carrier?.alive ? this.carrier.connectionMultAt(this.controller.pos) : 1);
+        (1 + this.livingCarriers * CARRIER_PRESSURE) *
+        (near ? near.connectionMultAt(this.controller.pos) : 1);
       this.connection.update(dt, this.fish.length, connMult);
-      // Resonance also trickles up over time, paced to the Connection rise, so the
-      // means to escape builds alongside the pressure. Eating is still far faster.
-      this.resonance.tickPassive(dt, PlayerConnection.riseRate(this.fish.length, connMult));
+      // Resonance also trickles up over time, paced to the Connection rise (relief
+      // included), so the means to escape builds alongside the pressure.
+      this.resonance.tickPassive(
+        dt,
+        PlayerConnection.riseRate(this.fish.length, connMult) * this.connection.reliefFactor,
+      );
     }
     if (!this.started) return;
 
@@ -814,10 +879,10 @@ export class GameApp {
       'The entity is closing in. A body you have not worn recently loosens its grip.')) return;
 
     // Point them at the objective once they can sense it at all.
-    const c = this.carrier;
-    if (c?.alive && beat('carrier',
+    const c = this.nearestCarrier(this.controller.pos);
+    if (c && beat('carrier',
       this.controller.pos.distanceTo(c.pos) < CARRIER_TRACK_RANGE,
-      'Something is broadcasting across the shelf. Follow the pulse — killing it is the only lasting relief.',
+      'Signal Carriers are broadcasting across this level. Lock on and DASH-BITE them — clearing every one weakens the entity for good.',
       6.5)) return;
 
     // Only worth saying once they are genuinely in trouble.
@@ -828,12 +893,14 @@ export class GameApp {
   // ---- Signal Carrier HUD --------------------------------------------------
 
   private carrierHudEl: HTMLElement | null = null;
+  private carrierNameEl: HTMLElement | null = null;
   private carrierFillEl: HTMLElement | null = null;
   private carrierStageEl: HTMLElement | null = null;
   private carrierNodesEl: HTMLElement | null = null;
   private carrierMarkEl: HTMLElement | null = null;
   private carrierPct = -1;
   private carrierNodeText = '';
+  private carrierNameText = '';
   private carrierSeen = false;
   /** Seconds the boss bar stays forced open after a hit, regardless of range. */
   private carrierEngagedT = 0;
@@ -849,7 +916,7 @@ export class GameApp {
     this.carrierMarkEl ||= document.getElementById('carrier-marker');
     if (!this.carrierHudEl || !this.carrierMarkEl) return;
 
-    const c = this.carrier;
+    const c = this.nearestCarrier(this.controller.pos);
     if (!c || !c.alive || !this.started || this.combat.dead) {
       this.carrierHudEl.classList.add('hidden');
       this.carrierMarkEl.classList.add('hidden');
@@ -871,9 +938,19 @@ export class GameApp {
           7,
         );
       }
+      this.carrierNameEl ||= document.getElementById('carrier-name');
       this.carrierFillEl ||= document.getElementById('carrier-fill');
       this.carrierStageEl ||= document.getElementById('carrier-stage');
       this.carrierNodesEl ||= document.getElementById('carrier-nodes');
+      // Name doubles as the objective counter when a zone fields more than one.
+      const nameText =
+        this.carrierTotalThisZone > 1
+          ? `SIGNAL CARRIER · ${this.livingCarriers}/${this.carrierTotalThisZone}`
+          : 'SIGNAL CARRIER';
+      if (nameText !== this.carrierNameText) {
+        this.carrierNameText = nameText;
+        if (this.carrierNameEl) this.carrierNameEl.textContent = nameText;
+      }
       const pct = Math.round(c.health01 * 100);
       if (pct !== this.carrierPct) {
         this.carrierPct = pct;
@@ -917,7 +994,9 @@ export class GameApp {
     const x = (nx * edge * 0.5 + 0.5) * window.innerWidth;
     const y = (-ny * edge * 0.5 + 0.5) * window.innerHeight;
     this.carrierMarkEl.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
-    this.carrierMarkEl.textContent = `◈ CARRIER ${Math.round(dist)}m`;
+    const left = this.livingCarriers;
+    this.carrierMarkEl.textContent =
+      left > 1 ? `◈ CARRIER ${Math.round(dist)}m · ${left} LEFT` : `◈ CARRIER ${Math.round(dist)}m`;
     this.carrierMarkEl.classList.remove('hidden');
   }
 
@@ -1059,6 +1138,7 @@ export class GameApp {
     this.runState.data.hostSpeciesId = speciesId;
     this.runState.save();
     this.spawnGrace = 2.5; // a beat of peace to settle into the new body
+    this.controller.refillStamina(); // a fresh body starts rested
 
     // A fresh body loosens the entity's grip; a recently-worn one barely helps.
     const fresh = this.connection.freshness(speciesId);
@@ -1095,44 +1175,74 @@ export class GameApp {
 
   private lockReticleEl: HTMLElement | null = null;
 
-  /** Acquire/hold a lock-on target while RMB is held and feed it to the camera. */
+  /**
+   * Acquire/hold a lock-on target while RMB is held and feed it to the camera,
+   * the reticle, and the bite-dash. A target may be a creature (possessable) OR a
+   * Signal Carrier (the objective, point 6) — both are dashed at and bitten the
+   * same way; only a creature can be possessed, so lockedCreature is the subset.
+   */
   private updateLockOn(): void {
     const active =
       this.input.rmbDown && this.started && !(this.combat?.dead ?? false) && !this.transitioning;
     if (!active) {
+      this.lockTarget = null;
       this.lockedCreature = null;
       this.playerCamera.setLockTarget(null);
+      if (this.combat) this.combat.lockTarget = null;
       return;
     }
-    // Sticky: keep the current target while it lives and stays within reach;
-    // otherwise acquire the best creature in view.
-    const cur = this.lockedCreature;
-    if (!cur || !cur.alive || cur.pos.distanceTo(this.controller.pos) > LOCK_KEEP_RANGE) {
-      this.lockedCreature = this.acquireLockTarget();
+    // Sticky: keep the current target while it lives and stays within reach
+    // (carriers hold from further, being large); otherwise re-acquire.
+    const cur = this.lockTarget;
+    const keepRange = this.isCarrier(cur) ? CARRIER_LOCK_RANGE * 1.3 : LOCK_KEEP_RANGE;
+    if (!cur || !cur.alive || cur.pos.distanceTo(this.controller.pos) > keepRange) {
+      this.lockTarget = this.acquireLockTarget();
     }
-    this.playerCamera.setLockTarget(this.lockedCreature ? this.lockedCreature.pos : null);
+    this.lockedCreature =
+      this.lockTarget && !this.isCarrier(this.lockTarget) ? (this.lockTarget as Creature) : null;
+    this.playerCamera.setLockTarget(this.lockTarget ? this.lockTarget.pos : null);
+    if (this.combat) this.combat.lockTarget = this.lockTarget;
   }
 
-  /** Pick the most on-screen, nearest living creature within the aim cone. */
-  private acquireLockTarget(): Creature | null {
-    const list = this.ecosystem?.list;
-    if (!list) return null;
+  /** Pick the most on-screen, nearest living target (creature or carrier) in the aim cone. */
+  private acquireLockTarget(): LockTarget | null {
     this.playerCamera.getAimDir(LOCK_AIM);
     const from = this.controller.pos;
-    let best: Creature | null = null;
+    let best: LockTarget | null = null;
     let bestScore = -Infinity;
-    for (let i = 0; i < list.length; i++) {
-      const c = list[i];
-      if (!c.alive) continue;
-      LOCK_TO.subVectors(c.pos, from);
+
+    const list = this.ecosystem?.list;
+    if (list) {
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i];
+        if (!c.alive) continue;
+        LOCK_TO.subVectors(c.pos, from);
+        const d = LOCK_TO.length();
+        if (d < 1e-3 || d > LOCK_RANGE) continue;
+        const dot = (LOCK_AIM.x * LOCK_TO.x + LOCK_AIM.y * LOCK_TO.y + LOCK_AIM.z * LOCK_TO.z) / d;
+        if (dot < LOCK_CONE) continue; // must be roughly in front / in view
+        const score = dot * 1.5 - d / LOCK_RANGE; // most-centered + closest wins
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+    }
+
+    // Carriers are lockable too — the objective you dash into and tear open. They
+    // hold from much further and get a small bias so aiming at one wins over a
+    // stray fish drifting across it.
+    for (const cc of this.carriers) {
+      if (!cc.alive) continue;
+      LOCK_TO.subVectors(cc.pos, from);
       const d = LOCK_TO.length();
-      if (d < 1e-3 || d > LOCK_RANGE) continue;
+      if (d < 1e-3 || d > CARRIER_LOCK_RANGE) continue;
       const dot = (LOCK_AIM.x * LOCK_TO.x + LOCK_AIM.y * LOCK_TO.y + LOCK_AIM.z * LOCK_TO.z) / d;
-      if (dot < LOCK_CONE) continue; // must be roughly in front / in view
-      const score = dot * 1.5 - d / LOCK_RANGE; // most-centered + closest wins
+      if (dot < LOCK_CONE) continue;
+      const score = dot * 1.5 - d / CARRIER_LOCK_RANGE + 0.25;
       if (score > bestScore) {
         bestScore = score;
-        best = c;
+        best = cc;
       }
     }
     return best;
@@ -1143,7 +1253,7 @@ export class GameApp {
     this.lockReticleEl ||= document.getElementById('lock-reticle');
     const el = this.lockReticleEl;
     if (!el) return;
-    const c = this.lockedCreature;
+    const c = this.lockTarget;
     if (!c || !c.alive) {
       el.classList.add('hidden');
       return;
@@ -1177,9 +1287,12 @@ export class GameApp {
   private endRun(title: string, sub: string, variant?: 'signal'): void {
     this.combat.dead = true; // gate control everywhere + enable R to restart
     document.exitPointerLock?.();
+    this.cinematic?.cancel(); // never leave the letterbox up over the death screen
     this.possession?.reset();
     this.score?.breakStreak();
     this.lockedCreature = null;
+    this.lockTarget = null;
+    if (this.combat) this.combat.lockTarget = null;
     this.playerCamera?.setLockTarget(null);
     this.damageBars.hideAll();
     this.sfx.setConnectionDrone(0);
@@ -1259,57 +1372,86 @@ export class GameApp {
    * the player has already destroyed — one Carrier per zone per run is the
    * anti-farm rule that keeps Dead Signal Fields scarce.
    */
-  private async buildCarrier(zone: Zone): Promise<void> {
-    this.disposeCarrier();
-    if (this.carrierDownThisZone) return;
-    const anchor = zone.getCarrierAnchor(CARRIER_ANCHOR);
-    if (!anchor) return;
+  private async buildCarriers(zone: Zone): Promise<void> {
+    this.disposeCarriers();
+    const anchors = zone.getCarrierAnchors();
+    if (anchors.length === 0) return;
+    const cfg = zone.getCarrierConfig?.() ?? { size: 12, health: 3000 };
 
-    try {
-      this.carrier = await SignalCarrier.create(
-        this.loader,
-        this.scene,
-        anchor,
-        zone.getBounds().ceilingY,
-      );
-    } catch (err) {
-      // Non-fatal: the zone is still playable, it just has no objective.
-      console.warn('[404hz] signal carrier failed to load', err);
-      return;
+    for (const anchor of anchors) {
+      let carrier: SignalCarrier;
+      try {
+        carrier = await SignalCarrier.create(
+          this.loader,
+          this.scene,
+          anchor,
+          zone.getBounds().ceilingY,
+          cfg.size,
+          cfg.health,
+        );
+      } catch (err) {
+        // Non-fatal: the zone is still playable, it just has one fewer objective.
+        console.warn('[404hz] signal carrier failed to load', err);
+        continue;
+      }
+      carrier.onDeath = (pos) => this.onCarrierDeath(pos);
+      carrier.onNodeDestroyed = (left) => this.onCarrierNode(left);
+      carrier.onPulse = (prox) => this.sfx.carrierPulse(prox);
+      this.carriers.push(carrier);
+
+      // Make the relay solid — one collider per carrier in the zone's live array,
+      // so player, camera, and creatures all avoid it. Removed in disposeCarriers
+      // (or on that carrier's death, so a faded corpse leaves no invisible wall).
+      const col: CylinderCollider = {
+        x: carrier.pos.x,
+        z: carrier.pos.z,
+        r: carrier.radius,
+        top: carrier.pos.y + carrier.radius,
+      };
+      this.carrierColliders.push(col);
+      zone.colliders.push(col);
+      // A small garrison each, so both relays are defended when found.
+      this.ecosystem.garrisonCarrier(carrier.pos, 4);
     }
-    this.carrier.onDeath = (pos) => this.onCarrierDeath(pos);
-    this.carrier.onNodeDestroyed = (left) => this.onCarrierNode(left);
-    this.carrier.onPulse = (prox) => this.sfx.carrierPulse(prox);
-    this.ecosystem.carrier = this.carrier;
-    this.ecosystem.garrisonCarrier(this.carrier.pos, 6);
-
-    // Make the relay solid. Pushing a collider into the zone's live array gives
-    // player, camera, and creature avoidance in one move — they all read the
-    // same array instance. It is removed again in disposeCarrier.
-    this.carrierCollider = {
-      x: this.carrier.pos.x,
-      z: this.carrier.pos.z,
-      r: this.carrier.radius,
-      top: this.carrier.pos.y + this.carrier.radius,
-    };
-    zone.colliders.push(this.carrierCollider);
+    this.ecosystem.carriers = this.carriers;
+    this.carrierTotalThisZone = this.carriers.length;
   }
 
-  private disposeCarrier(): void {
-    if (this.carrierCollider) {
-      const cols = this.zones?.current.colliders;
-      const i = cols ? cols.indexOf(this.carrierCollider) : -1;
-      if (i >= 0) cols!.splice(i, 1);
-      this.carrierCollider = null;
+  private disposeCarriers(): void {
+    const cols = this.zones?.current.colliders;
+    if (cols) {
+      for (const cc of this.carrierColliders) {
+        const i = cols.indexOf(cc);
+        if (i >= 0) cols.splice(i, 1);
+      }
     }
-    this.carrier?.dispose();
-    this.carrier = null;
+    this.carrierColliders.length = 0;
+    for (const c of this.carriers) c.dispose();
+    this.carriers = [];
+    this.carrierTotalThisZone = 0;
     this.field?.dispose();
     this.field = null;
     if (this.ecosystem) {
-      this.ecosystem.carrier = null;
+      this.ecosystem.carriers = [];
       this.ecosystem.field = null;
     }
+  }
+
+  /** How many of this zone's carriers are still broadcasting. */
+  private get livingCarriers(): number {
+    let n = 0;
+    for (const c of this.carriers) if (c.alive) n++;
+    return n;
+  }
+
+  /** Nearest still-living carrier to a point (HUD + aura + connection pressure). */
+  private nearestCarrier(at: Vector3): SignalCarrier | null {
+    return this.ecosystem?.nearestCarrier(at) ?? null;
+  }
+
+  /** True when a lock target is actually one of the carriers (not a creature). */
+  private isCarrier(t: LockTarget | null): t is SignalCarrier {
+    return !!t && this.carriers.includes(t as SignalCarrier);
   }
 
   /** A bite connected with the relay — feedback scaled to what it hit. */
@@ -1343,25 +1485,47 @@ export class GameApp {
    * a frenzy inside it.
    */
   private onCarrierDeath(pos: Vector3): void {
-    this.carrierDownThisZone = true;
     this.score.carrierKilled();
     this.sfx.carrierDeath();
     this.triggerShake();
     this.ecosystem.alertPrey();
 
+    // Killing a relay permanently loosens the entity's grip — the run-long payoff
+    // for clearing carriers (point 7), on top of the temporary field drain.
+    this.connection?.weaken(CARRIER_RELIEF_STEP);
+
+    // Drop the dead carrier's collider so its faded corpse leaves no invisible wall.
+    const cols = this.zones.current.colliders;
+    for (let i = this.carrierColliders.length - 1; i >= 0; i--) {
+      const cc = this.carrierColliders[i];
+      if (Math.abs(cc.x - pos.x) < 0.5 && Math.abs(cc.z - pos.z) < 0.5) {
+        const ci = cols.indexOf(cc);
+        if (ci >= 0) cols.splice(ci, 1);
+        this.carrierColliders.splice(i, 1);
+      }
+    }
+
+    // One Dead Signal Field at a time — a new kill moves it to the new corpse.
+    this.field?.dispose();
     this.field = new DeadSignalField(this.scene, pos);
     this.ecosystem.field = this.field;
-    this.ecosystem.carrier = null;
 
+    const remaining = this.livingCarriers;
     const flash = document.getElementById('possess-flash');
     if (flash) {
       flash.classList.remove('flash', 'fail');
       void flash.offsetWidth;
       flash.classList.add('flash');
     }
-    this.showToast('THE CARRIER IS DEAD', 'resonance', 3000);
+    this.showToast(
+      remaining > 0 ? `CARRIER DOWN · ${remaining} LEFT` : 'ALL CARRIERS DOWN — SIGNAL WEAKENED',
+      'resonance',
+      3000,
+    );
     this.showHint(
-      'A DEAD SIGNAL FIELD opens. Inside it the entity cannot hold you — and everything here has turned on everything else.',
+      remaining > 0
+        ? 'A DEAD SIGNAL FIELD opens over the corpse — the entity cannot hold you inside it. One relay down; find the rest.'
+        : 'Every relay in this level is dead. The signal is measurably weaker now, and it stays that way. Descend when ready.',
       7,
     );
   }
@@ -1370,9 +1534,9 @@ export class GameApp {
   private updateObjective(dt: number, dead: boolean): void {
     const pos = this.controller.pos;
 
-    // The corpse keeps updating after death so its collapse flare can play out;
-    // it is only disposed on zone change.
-    this.carrier?.update(dt, pos);
+    // Corpses keep updating after death so their collapse flare plays out; they
+    // are only disposed on zone change.
+    for (const c of this.carriers) c.update(dt, pos);
 
     if (this.field) {
       if (!this.field.update(dt)) {
@@ -1408,6 +1572,26 @@ export class GameApp {
       }
     }
     this.dominance.recordKill(c.species, mult);
+  }
+
+  /**
+   * Decide whether a kill earns a frenzy-eat cutaway (point 5). ALWAYS for prey
+   * as large or larger than the host (the trophy kills), and occasionally on a
+   * clean full eat of smaller prey — never for crabs (they chip, not spray), and
+   * never mid-possession, mid-descent, or on a dead host. The cinematic's own
+   * cooldown keeps it a rare treat even in a feeding frenzy.
+   */
+  private maybeKillCinematic(c: Creature): void {
+    if (!this.started || this.combat.dead || this.transitioning || this.promptShown) return;
+    if (this.possession?.possessing) return;
+    if (c.species.role === 'crab') return;
+    const hostLen = Math.max(0.001, this.fish.length);
+    const big = c.length >= hostLen; // as large or larger than the host
+    const eatenWhole = c.length <= hostLen / EAT_SIZE_RATIO; // a clean full swallow
+    if (!(big || (eatenWhole && Math.random() < 0.12))) return;
+    if (this.cinematic.trigger(this.controller.pos, c.pos, c.length, big)) {
+      this.combat.iframes(2.4); // no free hits while the camera is away
+    }
   }
 
   /** Populate the ecosystem for a zone (empty when the zone has no area). */
@@ -1447,9 +1631,14 @@ export class GameApp {
     // and there is no way back to it.
     const note = el.querySelector('.dp-carrier') as HTMLElement | null;
     if (note) {
-      const pending = !!this.carrier?.alive;
-      note.classList.toggle('hidden', !pending);
-      if (pending) note.textContent = 'The Signal Carrier here is still alive. There is no return.';
+      const pending = this.livingCarriers;
+      note.classList.toggle('hidden', pending === 0);
+      if (pending > 0) {
+        note.textContent =
+          pending === 1
+            ? '1 Signal Carrier here is still broadcasting — clearing it weakens the entity for good. There is no return.'
+            : `${pending} Signal Carriers here are still broadcasting — clear them to weaken the entity for good. There is no return.`;
+      }
     }
     el.classList.remove('hidden');
   }
@@ -1468,6 +1657,7 @@ export class GameApp {
   private async doDescend(): Promise<void> {
     if (this.transitioning) return;
     this.transitioning = true;
+    this.cinematic?.cancel(); // don't carry a cutaway across a zone change
     this.hideDescentPrompt();
 
     const transEl = document.getElementById('transition')!;
@@ -1497,11 +1687,10 @@ export class GameApp {
     await next.dressing?.(this.loader);
     this.bindEcosystem(next);
     this.ecosystem.armSpawnSafe(SPAWN.x, SPAWN.z, 30);
-    // A fresh zone gets a fresh objective — one Carrier each, never a second.
-    this.carrierDownThisZone = false;
+    // A fresh zone gets a fresh set of objectives.
     this.carrierSeen = false;
     this.fieldKills = 0;
-    await this.buildCarrier(next);
+    await this.buildCarriers(next);
     this.updateZoneAmbient();
     this.spawnGrace = 3.0; // brief peace after arriving in the new zone
     this.updateZoneTag();

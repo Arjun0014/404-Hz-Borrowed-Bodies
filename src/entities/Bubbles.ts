@@ -142,19 +142,22 @@ export class Bubbles {
     }
 
     // --- dash trail from the fish tail ---
+    // Denser and streaking harder backward the more the host is thrusting, so a
+    // full sprint leaves a real wake ripping off the tail rather than a sprinkle.
     if (dashOutput > 0.02) {
-      const rate = dashOutput * 40;
+      const rate = dashOutput * 55;
       const n = rate * dt;
       let count = Math.floor(n);
       if (Math.random() < n - count) count++;
+      const back = 0.3 + dashOutput * 0.35; // stronger backward streak while sprinting
       for (let k = 0; k < count; k++) {
         this.spawn(
           tailPos.x + (Math.random() - 0.5) * 0.35,
           tailPos.y + (Math.random() - 0.5) * 0.35,
           tailPos.z + (Math.random() - 0.5) * 0.35,
-          -fishVel.x * 0.3 + (Math.random() - 0.5) * 1.0,
+          -fishVel.x * back + (Math.random() - 0.5) * 1.0,
           -fishVel.y * 0.2 + GRAVITY_UP * 0.5 + (Math.random() - 0.5) * 0.7,
-          -fishVel.z * 0.3 + (Math.random() - 0.5) * 1.0,
+          -fishVel.z * back + (Math.random() - 0.5) * 1.0,
           0.2 + Math.random() * 0.4,
           0.8 + Math.random() * 0.8,
         );

@@ -11,6 +11,12 @@ import { BITE_SIZE_EXP } from '../data/growth';
 
 const FWD = new Vector3();
 const ORIGIN = new Vector3();
+const LOCK_DIR = new Vector3();
+
+// A lock-on bite commits harder than a free one: it dashes toward the target, so
+// the burst is stronger and reaches a little further to close the gap.
+const LOCK_DASH_MULT = 1.45;
+const LOCK_REACH_MULT = 1.15;
 
 // Attack tuning — a committed lunge: quick and reachy, but deliberate. Speed and
 // cooldown now come from the host's per-species attack profile (species.ts).
@@ -47,6 +53,18 @@ export class PlayerCombat {
   onFeed: (biomass: number) => void = () => {}; // ate/killed → grow
   /** A bite landed on the Signal Carrier — drives its hit feedback (Phase 12). */
   onCarrierHit: (nodeKilled: boolean, died: boolean) => void = () => {};
+
+  /**
+   * The current lock-on target (set each frame by GameApp; a creature OR the
+   * Signal Carrier — anything with a live world position). When set, clicking
+   * bite DASHES toward where the target is at that instant and strikes along the
+   * dash: the lock-and-attack of point 3. Null when nothing is locked.
+   */
+  lockTarget: { readonly pos: Vector3; readonly alive: boolean } | null = null;
+  /** Fixed aim direction of the lunge in progress (captured at the click). */
+  private readonly attackDir = new Vector3();
+  /** True while the lunge in progress is a lock-on dash (longer reach). */
+  private lungeLocked = false;
 
   private attackCd = 0;
   private attackActive = 0;
@@ -135,22 +153,48 @@ export class PlayerCombat {
     this.lungeHits.clear();
     this.landedThisLunge = false;
     this.carrierHitThisLunge = false;
-    this.controller.lunge(atk.lungeSpeed);
-    this.camera.punch(18);
+
+    // Lock-on strike: if a target is locked, dash toward where it is RIGHT NOW
+    // (its last-known position at the click — the dash is ballistic, it does not
+    // home) and snap the body onto that line so the bite lands along the dash.
+    // With nothing locked it's the plain forward lunge. Either way the aim is
+    // frozen for the whole bite window so a committed strike doesn't wander.
+    const lock = this.lockTarget;
+    this.lungeLocked = false;
+    if (lock && lock.alive) {
+      LOCK_DIR.subVectors(lock.pos, this.controller.pos);
+      if (LOCK_DIR.lengthSq() > 1e-4) {
+        this.attackDir.copy(LOCK_DIR).normalize();
+        this.controller.lungeToward(atk.lungeSpeed * LOCK_DASH_MULT, this.attackDir, true);
+        this.lungeLocked = true;
+      }
+    }
+    if (!this.lungeLocked) {
+      this.controller.getForward(this.attackDir);
+      this.controller.lunge(atk.lungeSpeed);
+    }
+
+    this.camera.punch(this.lungeLocked ? 24 : 18);
     this.fish.lungePulse();
     this.sfx.biteSwing(); // jaws snap (varied slice)
   }
 
   /** Check the front cone each frame the jaws are live (plows through schools). */
   private resolveBite(): void {
-    this.controller.getForward(FWD);
+    // Aim is the direction captured at the click (frozen for the whole window),
+    // so a lock-on dash strikes exactly where it was pointed and a free lunge
+    // doesn't smear as the body settles.
+    FWD.copy(this.attackDir);
     ORIGIN.copy(this.controller.pos).addScaledVector(FWD, this.fish.length * 0.55);
     // Reach + edible-prey size + bite damage all scale off the host's real body
     // length AND the host's per-species attack profile — a clownfish nips, a
     // shark tears; an apex "sweep" maw devours a wide arc, not just the front.
+    // A lock-on dash reaches a little further to finish closing the gap.
     const atk = this.fish.species.attack;
     const eatMax = this.fish.length / EAT_SIZE_RATIO;
-    const reach = this.fish.length * REACH_PER_LEN * atk.reachMult + REACH_MOUTH;
+    const reach =
+      this.fish.length * REACH_PER_LEN * atk.reachMult * (this.lungeLocked ? LOCK_REACH_MULT : 1) +
+      REACH_MOUTH;
     const damage =
       BITE_BASE * atk.damageMult * Math.pow(this.fish.length / BITE_REF_LEN, BITE_SIZE_EXP);
     const cone = atk.sweep ? 0.1 : CONE_DOT; // sweep = wide devouring arc
@@ -184,7 +228,7 @@ export class PlayerCombat {
     // The Signal Carrier, resolved here and ONCE per lunge. The bite's live
     // window is ~25 frames long; letting it connect on each one multiplied both
     // the damage and the impact sound by 25.
-    const carrier = this.ecosystem.carrier;
+    const carrier = this.ecosystem.nearestCarrier(ORIGIN);
     if (carrier?.alive && !this.carrierHitThisLunge) {
       const hitRes = carrier.tryHit(ORIGIN, FWD, reach, cone, damage);
       if (hitRes.hit) {

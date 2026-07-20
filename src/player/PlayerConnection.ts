@@ -29,6 +29,8 @@ const SENS_FLAT = 1.0;
 const CONTAM_DECAY_PER_SEC = 0.04; // a used species reads "fresh" again after ~25 s
 const FRESH_REDUCTION = 0.45; // a fully-fresh possession drops Connection this much
 const MIN_REDUCTION = 0.04; // even a contaminated re-entry gives a token dip
+/** Cap on how far killing Signal Carriers can permanently slow the rise. */
+const MAX_CARRIER_RELIEF = 0.6;
 
 export type ConnectionTier = 'calm' | 'rising' | 'high' | 'critical';
 
@@ -41,6 +43,13 @@ export class PlayerConnection {
   /** Debug: freeze the rise (balancing/playtest). */
   frozen = false;
   private wasFull = false;
+  /**
+   * Permanent slowdown from killing Signal Carriers (0..MAX_CARRIER_RELIEF). Each
+   * carrier destroyed adds to it and it persists across descents, so clearing a
+   * level's relays is lasting progress against the entity — the payoff for the
+   * "kill them all each level" loop. Multiplies the whole rise via reliefFactor.
+   */
+  private carrierRelief = 0;
   /** speciesId → contamination 0..1 (1 = just used, decays toward fresh). */
   private readonly contamination = new Map<string, number>();
 
@@ -68,6 +77,16 @@ export class PlayerConnection {
     return SENS_FLAT;
   }
 
+  /** 0..1 permanent rise multiplier from carrier kills (1 = none killed yet). */
+  get reliefFactor(): number {
+    return 1 - this.carrierRelief;
+  }
+
+  /** Killing a Signal Carrier permanently weakens the entity's grip. */
+  weaken(step: number): void {
+    this.carrierRelief = clamp(this.carrierRelief + step, 0, MAX_CARRIER_RELIEF);
+  }
+
   /** Connection gained per second — the pressure's pace, identical in every body.
    *  connMult is the host's per-species signal cost (species.ts connectionMult).
    *  Other systems (e.g. passive Resonance) mirror this to move in lockstep. */
@@ -86,7 +105,10 @@ export class PlayerConnection {
       }
     }
     if (this.frozen) return;
-    this.value = Math.min(1, this.value + PlayerConnection.riseRate(hostLength, connMult) * dt);
+    this.value = Math.min(
+      1,
+      this.value + PlayerConnection.riseRate(hostLength, connMult) * this.reliefFactor * dt,
+    );
     if (this.value >= 1 && !this.wasFull) {
       this.wasFull = true;
       this.onFull();
@@ -126,6 +148,7 @@ export class PlayerConnection {
     this.value = 0;
     this.frozen = false;
     this.wasFull = false;
+    this.carrierRelief = 0;
     this.contamination.clear();
   }
 

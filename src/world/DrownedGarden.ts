@@ -870,15 +870,22 @@ export class DrownedGarden implements Zone {
   }
 
   /**
-   * The Signal Carrier stands at the centre of the stone circle. The henge was
-   * already the cavern's most deliberate-looking place; putting the relay in the
-   * middle of it makes the whole site read as built AROUND the thing, and gives
-   * the fight a natural arena with the standing stones as cover.
+   * TWO Signal Carriers, at the cavern's two most deliberate-looking precincts:
+   * the centre of the stone circle (the henge reads as built AROUND the relay,
+   * with the standing stones as cover) and the drowned graveyard across the
+   * cavern. Clearing both is the Garden's objective.
    */
-  getCarrierAnchor(out: Vector3): Vector3 {
-    const x = HENGE_CENTRE.x;
-    const z = HENGE_CENTRE.z;
-    return out.set(x, this.terrain.heightAt(x, z), z);
+  getCarrierAnchors(): Vector3[] {
+    const spots: [number, number][] = [
+      [HENGE_CENTRE.x, HENGE_CENTRE.z], // stone circle (150, -50)
+      [380, 200], // the drowned graveyard precinct
+    ];
+    return spots.map(([x, z]) => new Vector3(x, this.terrain.heightAt(x, z), z));
+  }
+
+  /** Deep relays are larger and tougher than the starting sea's. */
+  getCarrierConfig(): { size: number; health: number } {
+    return { size: 15, health: 4200 };
   }
 
   getDescentInfo(): DescentInfo {

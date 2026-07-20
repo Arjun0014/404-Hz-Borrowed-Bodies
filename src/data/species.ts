@@ -22,6 +22,15 @@ export interface MovementDef {
   turnRate: number;
   /** How much of full thrust applies vertically (agility up/down). */
   verticalFactor: number;
+  /**
+   * Sprint (Shift) STAMINA, per host. `dashStamina` is how many seconds of
+   * continuous sprint a full bar buys; `dashRegen` is how fast it refills (bar
+   * fraction per second) once you stop. A shark holds a long sprint and recovers
+   * fast; a fat, heavy body tires quickly. This is what makes the energy bar mean
+   * something different in every body (see SwimController + the energy HUD).
+   */
+  dashStamina: number;
+  dashRegen: number;
 }
 
 /**
@@ -143,20 +152,25 @@ export const DARTFISH: SpeciesDef = {
   flipForward: false,
   movement: {
     maxSpeed: 6.2,
-    dashMultiplier: 1.9,
+    // Sprint is punchier than before (1.9 → 2.2) so a dash genuinely rips through
+    // the water rather than nudging you a little faster. Bounded by the new
+    // stamina bar so it stays a resource, not a permanent cruise speed.
+    dashMultiplier: 2.2,
     accel: 22,
     drag: 1.9,
     turnRate: 3.6,
     verticalFactor: 0.85,
+    dashStamina: 3.2,
+    dashRegen: 0.5,
   },
   camera: {
     // distanceFactor is a sqrt(length) coefficient (see PlayerCamera).
-    // The only intentional change from the clownfish profile: the shoulder sits
-    // closer. 3.0 put the host 2.12 m out, which read as distant; this brings it
-    // to 1.63 m. heightFactor and FOV are left alone so the viewing ANGLE onto
-    // the body is exactly what it was — only the distance moves.
-    distanceFactor: 2.3,
-    minDistance: 1.3,
+    // Pulled in again this pass: the shoulder still felt distant at 1.63 m, so
+    // 2.3 → 1.8 brings a min-size starter to ~1.27 m. heightFactor and FOV are
+    // left exactly as they were — only the DISTANCE moves, never the angle, so
+    // the approved swim feel is untouched.
+    distanceFactor: 1.8,
+    minDistance: 0.95,
     heightFactor: 1.5,
     baseFov: 58,
   },
@@ -192,15 +206,17 @@ export const TUNA: SpeciesDef = {
   flipForward: false,
   movement: {
     maxSpeed: 8.5,
-    dashMultiplier: 1.7,
+    dashMultiplier: 2.0,
     accel: 16,
     drag: 1.4,
     turnRate: 2.2,
     verticalFactor: 0.6,
+    dashStamina: 4.5,
+    dashRegen: 0.4,
   },
   camera: {
-    distanceFactor: 5.5,
-    minDistance: 3.5,
+    distanceFactor: 4.4,
+    minDistance: 3.0,
     heightFactor: 1.6,
     baseFov: 62,
   },
@@ -269,6 +285,9 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     archetype: 'skirmisher',
     attack: { name: 'Sweep', damageMult: 1.2, reachMult: 1.4, cooldown: 1.6, lungeSpeed: 20, sweep: true },
     ability: { kind: 'glide', name: 'Glide', cooldown: 7, duration: 2.5, desc: 'Soaring glide — long, fast, and hard to hit.' },
+    // Wide wings need a touch more room to read, but still far closer than the
+    // old 3.1 default (see hostProfileFromCreature's camera merge).
+    camera: { distanceFactor: 2.8, minDistance: 3.4, heightFactor: 1.6, baseFov: 64 },
     connectionMult: 1.0,
     identity: 'Vast and unhurried — wide wings, wide reach.',
   },
@@ -283,6 +302,7 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     archetype: 'apex',
     attack: { name: 'Devour', damageMult: 2.6, reachMult: 1.4, cooldown: 1.7, lungeSpeed: 26, sweep: true },
     ability: { kind: 'rampage', name: 'Rampage', cooldown: 14, duration: 5, desc: 'Unstoppable charge — speed, armour, and a maw that takes everything.' },
+    camera: { distanceFactor: 2.3, minDistance: 5.0, heightFactor: 1.5, baseFov: 66 },
     connectionMult: 1.0,
     identity: 'The thing the cave is afraid of. Now it is you.',
   },
@@ -291,6 +311,7 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     archetype: 'apex',
     attack: { name: 'Maw', damageMult: 2.0, reachMult: 1.25, cooldown: 1.6, lungeSpeed: 22, sweep: true },
     ability: { kind: 'frenzy', name: 'Frenzy', cooldown: 12, duration: 4, desc: 'Blood frenzy — a surge of speed and savage bite.' },
+    camera: { distanceFactor: 2.5, minDistance: 3.2, heightFactor: 1.5, baseFov: 62 },
     connectionMult: 1.0,
     identity: 'Apex terror — devours all in its path; the signal loves it.',
   },
@@ -323,6 +344,15 @@ function genericIdentity(role: CreatureSpecies['role']): string {
 export function hostProfileFromCreature(sp: CreatureSpecies): SpeciesDef {
   const base = sp.baseLength;
   const curated = ROSTER[sp.id];
+  // Per-body sprint stamina: apex hunters have a long, fast-recovering sprint;
+  // a heavy crab or a broad forager tires quickly. This is the "shark has more
+  // energy, fat creatures less" rule expressed off the creature's own role.
+  const dashStamina = sp.role === 'crab' ? 1.6
+    : sp.apex ? 5.0
+    : sp.role === 'predator' ? 4.0
+    : sp.role === 'forager' ? 2.8
+    : 3.4; // prey
+  const dashRegen = sp.role === 'crab' ? 0.28 : sp.apex ? 0.4 : 0.42;
   const base_profile: SpeciesDef = {
     id: sp.id,
     displayName: sp.displayName,
@@ -331,16 +361,21 @@ export function hostProfileFromCreature(sp: CreatureSpecies): SpeciesDef {
     flipForward: sp.flipForward,
     movement: {
       maxSpeed: sp.maxSpeed,
-      dashMultiplier: 1.7,
+      dashMultiplier: 1.95,
       accel: sp.accel,
       drag: sp.drag,
       turnRate: sp.turnRate,
       verticalFactor: sp.role === 'crab' ? 0.5 : 0.75,
+      dashStamina,
+      dashRegen,
     },
     camera: {
-      // sqrt(length) coefficient (see PlayerCamera.computeBaseDist).
-      distanceFactor: 3.1,
-      minDistance: Math.max(1.6, base * 1.1),
+      // sqrt(length) coefficient (see PlayerCamera.computeBaseDist). Pulled in
+      // from 3.1 so every possessed body sits closer; the sqrt still gives big
+      // hosts the extra room they need. Notable hosts (shark, megalodon, manta)
+      // override this with a hand-picked profile in ROSTER.
+      distanceFactor: 2.6,
+      minDistance: Math.max(1.2, base * 0.95),
       heightFactor: 1.5,
       baseFov: 60,
     },

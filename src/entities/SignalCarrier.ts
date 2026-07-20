@@ -48,17 +48,22 @@ import carrierUrl from '../../assets/eye_signal_carrier.glb?url';
  * not a formality.
  */
 
-/** Longest-axis size of the carrier body, in meters. A genuine landmark. */
+// These are the REFERENCE proportions for a full-size carrier; a per-zone `size`
+// and `maxHealth` (see create()) scale everything off them, so a smaller, killable
+// relay in the starting sea and a larger one in the deep share one rig.
+/** Reference longest-axis size of the carrier body, in meters. A genuine landmark. */
 const CARRIER_SIZE = 16;
-/** Hover height above the seabed at its anchor. */
+/** Reference hover height above the seabed at its anchor. */
 const HOVER = 11;
-/** Bite/hit radius of the body. */
+/** Reference bite/hit radius of the body. */
 const BODY_RADIUS = 6.5;
 
-const MAX_HEALTH = 12000;
+/** Default health if a zone doesn't specify one (zones pass their own). */
+const MAX_HEALTH = 4000;
 /** Fraction of max health removed instantly when a node is destroyed. */
 const NODE_CHUNK = 0.2;
-const NODE_HEALTH = 750;
+/** Each node's own HP, as a fraction of the carrier's max health. */
+const NODE_HEALTH_FRAC = 0.06;
 const NODE_COUNT = 3;
 const NODE_ORBIT_R = 10.5;
 const NODE_RADIUS = 1.5;
@@ -106,11 +111,20 @@ export interface CarrierHitResult {
 
 export class SignalCarrier {
   readonly pos = new Vector3();
-  readonly radius = BODY_RADIUS;
+  readonly radius: number;
   readonly auraRadius = AURA_RADIUS;
-  readonly maxHealth = MAX_HEALTH;
-  health = MAX_HEALTH;
+  readonly maxHealth: number;
+  health: number;
   alive = true;
+
+  /** Longest-axis size in metres (per-zone; smaller in the starting sea). */
+  readonly size: number;
+  /** Uniform visual/geometry scale relative to the reference CARRIER_SIZE. */
+  private readonly vis: number;
+  private readonly hover: number;
+  private readonly nodeOrbitR: number;
+  private readonly nodeRadius: number;
+  private readonly nodeMaxHealth: number;
 
   /** Fired once when the carrier dies, at its position — hands off to the field. */
   onDeath: (pos: Vector3) => void = () => {};
@@ -145,7 +159,19 @@ export class SignalCarrier {
   private constructor(
     private readonly scene: Scene,
     model: Object3D,
+    size: number,
+    maxHealth: number,
   ) {
+    const vis = size / CARRIER_SIZE;
+    this.size = size;
+    this.vis = vis;
+    this.radius = BODY_RADIUS * vis;
+    this.hover = HOVER * vis;
+    this.nodeOrbitR = NODE_ORBIT_R * vis;
+    this.nodeRadius = Math.max(1.1, NODE_RADIUS * vis);
+    this.maxHealth = maxHealth;
+    this.health = maxHealth;
+    this.nodeMaxHealth = maxHealth * NODE_HEALTH_FRAC;
     this.group.name = 'signal-carrier';
     this.bodyRoot.add(model);
     this.group.add(this.bodyRoot);
@@ -163,25 +189,27 @@ export class SignalCarrier {
     scene: Scene,
     anchor: Vector3,
     ceilingY: number,
+    size = CARRIER_SIZE,
+    maxHealth = MAX_HEALTH,
   ): Promise<SignalCarrier> {
     const gltf = await loader.loadGLB(carrierUrl);
     const model = gltf.scene;
 
     // Normalize: the source is authored at an arbitrary scale far from the
-    // origin, so scale its longest axis to CARRIER_SIZE and recenter the pivot.
+    // origin, so scale its longest axis to `size` and recenter the pivot.
     const box = new Box3().setFromObject(model);
-    const size = box.getSize(new Vector3());
-    const scale = CARRIER_SIZE / Math.max(size.x, size.y, size.z, 1e-4);
+    const bsize = box.getSize(new Vector3());
+    const scale = size / Math.max(bsize.x, bsize.y, bsize.z, 1e-4);
     const wrap = new Group();
     wrap.add(model);
     wrap.scale.setScalar(scale);
     wrap.position.copy(box.getCenter(new Vector3()).multiplyScalar(-scale));
 
-    const carrier = new SignalCarrier(scene, wrap);
+    const carrier = new SignalCarrier(scene, wrap, size, maxHealth);
     carrier.captureBodyMaterials(model);
     // Hover clear of the seabed, but never so high that the body breaches.
-    const topRoom = ceilingY - CARRIER_SIZE * 0.55;
-    carrier.pos.copy(anchor).setY(Math.min(anchor.y + HOVER, topRoom));
+    const topRoom = ceilingY - size * 0.55;
+    carrier.pos.copy(anchor).setY(Math.min(anchor.y + carrier.hover, topRoom));
     carrier.baseY = carrier.pos.y;
     carrier.group.position.copy(carrier.pos);
     carrier.buildBeacon();
@@ -242,7 +270,7 @@ export class SignalCarrier {
       opacity: 0.85,
     });
     this.glowSprite = new Sprite(this.glowMat);
-    this.glowSprite.scale.setScalar(22);
+    this.glowSprite.scale.setScalar(22 * this.vis);
     this.glowSprite.renderOrder = 3;
     this.group.add(this.glowSprite);
     this.disposables.push(tex, this.glowMat);
@@ -281,7 +309,7 @@ export class SignalCarrier {
   private buildNodes(): void {
     // Detail 0 — a hard-faceted crystal. Subdivided, it read as a plain white
     // ball and vanished into the beacon glow.
-    const geo = new IcosahedronGeometry(NODE_RADIUS, 0);
+    const geo = new IcosahedronGeometry(this.nodeRadius, 0);
     this.disposables.push(geo);
     for (let i = 0; i < NODE_COUNT; i++) {
       const mat = new MeshBasicMaterial({ color: 0xbdf0ff, fog: false, toneMapped: false });
@@ -292,10 +320,10 @@ export class SignalCarrier {
       this.disposables.push(mat);
       this.nodes.push({
         mesh,
-        health: NODE_HEALTH,
+        health: this.nodeMaxHealth,
         alive: true,
         phase: (i / NODE_COUNT) * Math.PI * 2,
-        yOff: -2 + i * 2.4,
+        yOff: (-2 + i * 2.4) * this.vis,
         pos: new Vector3(),
       });
     }
@@ -377,7 +405,7 @@ export class SignalCarrier {
 
     for (const nd of this.nodes) {
       if (!nd.alive) continue;
-      if (!this.inStrike(nd.pos, NODE_RADIUS, origin, forward, reach, minDot)) continue;
+      if (!this.inStrike(nd.pos, this.nodeRadius, origin, forward, reach, minDot)) continue;
       res.hit = true;
       nd.health -= damage;
       res.damage += damage;
@@ -395,7 +423,7 @@ export class SignalCarrier {
       break;
     }
 
-    if (!res.nodeKilled && this.inStrike(this.pos, BODY_RADIUS, origin, forward, reach, minDot)) {
+    if (!res.nodeKilled && this.inStrike(this.pos, this.radius, origin, forward, reach, minDot)) {
       res.hit = true;
       const applied = damage * (this.shielded ? SHIELDED_MULT : 1);
       this.health -= applied;
@@ -475,16 +503,16 @@ export class SignalCarrier {
     const arr = this.tetherPos.array as Float32Array;
     for (const nd of this.nodes) {
       nd.phase += spin * dt;
-      const r = NODE_ORBIT_R + Math.sin(this.time * 0.8 + nd.phase) * 0.8;
+      const r = this.nodeOrbitR + Math.sin(this.time * 0.8 + nd.phase) * 0.8 * this.vis;
       nd.pos.set(
         this.pos.x + Math.cos(nd.phase) * r,
-        this.pos.y + nd.yOff + Math.sin(this.time * 0.9 + nd.phase) * 0.7,
+        this.pos.y + nd.yOff + Math.sin(this.time * 0.9 + nd.phase) * 0.7 * this.vis,
         this.pos.z + Math.sin(nd.phase) * r,
       );
       if (nd.alive) {
         // Local space (the group is already at this.pos).
         nd.mesh.position.subVectors(nd.pos, this.pos);
-        const hurt = 1 - nd.health / NODE_HEALTH;
+        const hurt = 1 - nd.health / this.nodeMaxHealth;
         const throb = 1 + Math.sin(this.time * (3 + hurt * 7) + nd.phase) * 0.12;
         nd.mesh.scale.setScalar(throb);
       }
@@ -515,7 +543,7 @@ export class SignalCarrier {
     // Core glow: throbs with the pulse cycle, flares when hurt.
     const cyc = 1 - Math.max(0, this.pulseT / interval);
     const flare = Math.pow(Math.sin(cyc * Math.PI), 3);
-    this.glowSprite.scale.setScalar(21 + flare * 8 + this.hurtFlash * 10);
+    this.glowSprite.scale.setScalar((21 + flare * 8 + this.hurtFlash * 10) * this.vis);
     this.glowMat.opacity = 0.4 + flare * 0.3 + this.hurtFlash * 0.35;
 
     for (const r of this.rings) {
@@ -524,7 +552,7 @@ export class SignalCarrier {
         continue;
       }
       r.t = Math.min(1, r.t + dt / 2.2);
-      const s = 8 + r.t * 46;
+      const s = (8 + r.t * 46) * this.vis;
       r.mesh.scale.set(s, s, s);
       // Fade in fast, then out — a sweep passing you, not a ring sitting there.
       r.mat.opacity = Math.min(1, r.t * 8) * (1 - r.t) * 0.38;

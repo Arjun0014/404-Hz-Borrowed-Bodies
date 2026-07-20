@@ -29,6 +29,21 @@ export class SwimController {
   /** 0..1 thrust intensity for water FX — full while dashing, light while cruising fast. */
   dashOutput = 0;
 
+  // --- sprint (Shift) stamina -------------------------------------------------
+  /** 0..1 sprint energy: drains while sprinting, refills when you let off. */
+  private stamina = 1;
+  /** True the frames the host is actually sprinting (bar has charge + moving). */
+  sprinting = false;
+  /** 0..1 HUD reveal: 1 while sprinting, eases to 0 once you stop (bar hides). */
+  staminaShow = 0;
+  /** After a full drain, block sprint until the bar recovers past a threshold. */
+  private sprintLockout = false;
+
+  /** 0..1 remaining sprint energy (for the energy HUD). */
+  get stamina01(): number {
+    return this.stamina;
+  }
+
   /** Orientation as yaw/pitch scalars — roll is structurally impossible. */
   private curYaw = Math.PI / 2; // spawn facing +X (toward the drop-off)
   private curPitch = 0;
@@ -73,6 +88,7 @@ export class SwimController {
     this.vel.set(0, 0, 0);
     this.speed01 = 0;
     this.dashOutput = 0;
+    this.refillStamina();
     this.curYaw = Math.PI / 2;
     this.curPitch = 0;
     this.yawRate = 0;
@@ -96,6 +112,31 @@ export class SwimController {
     this.getForward(TMP);
     this.vel.addScaledVector(TMP, speed);
     this.lungeBoostT = 0.45;
+  }
+
+  /**
+   * A DIRECTED lunge toward a world-space direction — the lock-on strike (point
+   * 3). Adds the burst along `dir` and, when `snapFacing`, orients the body onto
+   * that line immediately so it reads as a committed turn-and-dash rather than a
+   * sideways slide; the follow-up bite (which reads getForward) then lands along
+   * the dash. Same max-speed-cap lift as a normal lunge, held a touch longer so
+   * the gap-closer actually covers the ground.
+   */
+  lungeToward(speed: number, dir: Vector3, snapFacing: boolean): void {
+    TMP.copy(dir);
+    if (TMP.lengthSq() < 1e-8) {
+      this.lunge(speed);
+      return;
+    }
+    TMP.normalize();
+    this.vel.addScaledVector(TMP, speed);
+    this.lungeBoostT = 0.5;
+    if (snapFacing) {
+      this.curYaw = Math.atan2(TMP.x, TMP.z);
+      this.curPitch = -Math.asin(Math.max(-1, Math.min(1, TMP.y)));
+      LOOK_E.set(this.curPitch, this.curYaw, 0);
+      this.fish.object.quaternion.setFromEuler(LOOK_E);
+    }
   }
 
   /**
@@ -140,21 +181,54 @@ export class SwimController {
     this.boostT = Math.max(this.boostT, duration);
   }
 
+  /** Refill the sprint bar — a fresh host (or a respawn) starts fully rested. */
+  refillStamina(): void {
+    this.stamina = 1;
+    this.sprinting = false;
+    this.staminaShow = 0;
+    this.sprintLockout = false;
+  }
+
+  /**
+   * Resolve sprint for this frame and drain/refill the bar. `driving` gates it on
+   * actual forward effort so idling with Shift held never bleeds energy; a short
+   * lockout after a full drain stops the sprint stuttering on/off at empty.
+   * Returns true while the host is sprinting.
+   */
+  private stepSprint(dt: number, mv: MovementDef, driving: boolean): boolean {
+    const wantSprint = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
+    const sprinting = wantSprint && driving && this.stamina > 0.001 && !this.sprintLockout;
+    this.sprinting = sprinting;
+    if (sprinting) {
+      this.stamina = Math.max(0, this.stamina - dt / Math.max(0.5, mv.dashStamina));
+      if (this.stamina <= 0) this.sprintLockout = true;
+    } else {
+      this.stamina = Math.min(1, this.stamina + dt * mv.dashRegen);
+      if (this.sprintLockout && this.stamina > 0.25) this.sprintLockout = false;
+    }
+    // HUD reveal: snap up while sprinting, ease away once you stop (bar hides).
+    this.staminaShow = sprinting ? 1 : Math.max(0, this.staminaShow - dt * 2.4);
+    return sprinting;
+  }
+
   update(dt: number): void {
     const mv = this.fish.species.movement;
     if (this.fish.species.locomotion === 'crawl') {
       this.crawlUpdate(dt, mv);
       return;
     }
-    const dashing = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
     this.boostT = Math.max(0, this.boostT - dt);
     const boost = this.boostT > 0 ? this.boostMult : 1;
-    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
 
     // --- input → desired thrust direction -----------------------------------
     const thrust = this.input.axis('KeyW', 'KeyS');
     const strafe = this.input.axis('KeyD', 'KeyA');
     const vertical = this.input.axis('Space', 'KeyC');
+
+    // Sprint (Shift) — only while genuinely driving the body; drains the bar.
+    const driving = thrust > 0.1 || strafe !== 0 || vertical !== 0;
+    const dashing = this.stepSprint(dt, mv, driving);
+    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
 
     this.camera.getAimDir(AIM);
     if (STEERING_SCHEME === 'B') AIM.y = 0;
@@ -325,14 +399,14 @@ export class SwimController {
    * crawl instead of the old sideways scuttle.
    */
   private crawlUpdate(dt: number, mv: MovementDef): void {
-    const dashing = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
     this.boostT = Math.max(0, this.boostT - dt);
     const boost = this.boostT > 0 ? this.boostMult : 1;
-    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
 
     // Horizontal movement, camera-relative (aim flattened to the seabed plane).
     const thrust = this.input.axis('KeyW', 'KeyS');
     const strafe = this.input.axis('KeyD', 'KeyA');
+    const dashing = this.stepSprint(dt, mv, thrust > 0.1 || strafe !== 0);
+    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
     this.camera.getAimDir(AIM);
     AIM.y = 0;
     if (AIM.lengthSq() < 1e-6) AIM.set(Math.sin(this.curYaw), 0, Math.cos(this.curYaw));

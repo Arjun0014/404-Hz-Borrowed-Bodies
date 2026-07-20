@@ -75,6 +75,9 @@
     <div id="health-hud" class="hidden">
       <div id="health-label">HOST HEALTH</div>
       <div id="health-bar"><div id="health-fill"></div></div>
+      <!-- Sprint energy: only revealed while you sprint (opacity driven by JS),
+           drains as you go and refills — and fades away — once you let off. -->
+      <div id="energy-bar"><div id="energy-fill"></div></div>
     </div>
     <div id="resonance-gauge" class="hidden">
       <div class="rg-ring"><span class="rg-core">◆</span></div>
@@ -99,6 +102,12 @@
       <div class="pp-channel"><div class="pp-channel-fill"></div></div>
     </div>
     <div id="possess-flash"></div>
+
+    <!-- Kill cinematic: letterbox bars for the frenzy-eat cutaway (heights driven by JS). -->
+    <div id="cinematic" class="hidden">
+      <div class="cine-bar cine-top"></div>
+      <div class="cine-bar cine-bottom"></div>
+    </div>
 
     <div id="death-screen" class="overlay hidden">
       <div class="death-title">YOUR HOST HAS DIED</div>

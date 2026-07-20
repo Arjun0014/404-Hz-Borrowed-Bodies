@@ -340,7 +340,10 @@ export class SwimController {
     this.fish.setBank(bank, dt);
 
     this.fish.object.position.copy(this.pos);
-    this.fish.update(dt, Math.min(1, this.speed01));
+    // Let the tail beat HARDER than cruise while sprinting/lunging: cruise caps
+    // speed01 at ~1, so anything past it is genuine exertion and should read as a
+    // faster, more urgent stroke rather than the same idle-speed animation.
+    this.fish.update(dt, Math.min(1.6, this.speed01));
   }
 
   /** Drift the host with the zone's water, if this zone has any. */
@@ -498,6 +501,9 @@ export class SwimController {
     this.fish.object.quaternion.setFromEuler(LOOK_E);
     this.fish.setBank(0, dt);
     this.fish.object.position.copy(this.pos);
-    this.fish.update(dt, Math.min(1, this.speed01));
+    // Let the tail beat HARDER than cruise while sprinting/lunging: cruise caps
+    // speed01 at ~1, so anything past it is genuine exertion and should read as a
+    // faster, more urgent stroke rather than the same idle-speed animation.
+    this.fish.update(dt, Math.min(1.6, this.speed01));
   }
 }

@@ -47,7 +47,6 @@ import { PlayerConnection } from '../player/PlayerConnection';
 import { Dominance } from '../systems/Dominance';
 import { Sfx, AMBIENT } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
-import { SHALLOW_VEIL_POP } from '../data/creatures';
 import { SignalCarrier } from '../entities/SignalCarrier';
 import { DeadSignalField } from '../systems/DeadSignalField';
 import { Score } from '../systems/Score';
@@ -1405,7 +1404,7 @@ export class GameApp {
       colliders: zone.colliders,
       bounds: zone.getBounds(),
       area,
-      population: area ? SHALLOW_VEIL_POP : [],
+      population: area ? zone.getPopulation() : [],
       focus: this.controller.pos,
     });
   }

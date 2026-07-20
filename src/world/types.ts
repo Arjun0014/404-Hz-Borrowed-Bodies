@@ -1,5 +1,6 @@
 import type { PerspectiveCamera, Texture, Vector3, WebGLRenderer } from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
+import type { PopEntry } from '../data/creatures';
 
 /**
  * The slice of AssetLoader a zone needs for its dressing pass. Declared
@@ -100,6 +101,8 @@ export interface Zone {
   getBounds(): ZoneBounds;
   /** Where the ecosystem may spawn creatures; null = this zone has none. */
   getPopulationArea(): PopulationArea | null;
+  /** Which creatures live here. Each zone declares its own species mix. */
+  getPopulation(): PopEntry[];
   /**
    * Where the SHARED reef-flora scatter may plant, or null if this zone dresses
    * itself. The Shallow Veil uses the shared set; the Drowned Garden supplies

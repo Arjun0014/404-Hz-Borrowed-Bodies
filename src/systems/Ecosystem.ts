@@ -52,6 +52,9 @@ const FIELD_PULL_MULT = 2.1;
 /** Re-run the director every N frames (it is a full-population scan). */
 const DIRECTOR_STRIDE = 12;
 
+/** Radius of the firefly squid's ink cloud, metres. */
+const INK_RADIUS = 46;
+
 /** A coherent shoal: a roaming centre its members steer toward as one body. */
 interface School {
   species: CreatureSpecies;
@@ -568,6 +571,22 @@ export class Ecosystem {
   /** Startle nearby prey away from the host (a failed risk-snatch alerts the sea). */
   alertPrey(): void {
     this.playerThreatT = Math.max(this.playerThreatT, 2.5);
+  }
+
+  /**
+   * Ink cloud (firefly squid): everything currently hunting the host loses it.
+   * Implemented by clearing the hunt state and the apex's grudge on nearby
+   * creatures, so pursuers break off and go back to their own business rather
+   * than merely being slowed — the squid's escape should feel like vanishing.
+   */
+  blindHunters(seconds: number): void {
+    const r2 = INK_RADIUS * INK_RADIUS;
+    for (let i = 0; i < this.creatures.length; i++) {
+      const c = this.creatures[i];
+      if (!c.alive) continue;
+      if (c.pos.distanceToSquared(this._playerPos) > r2) continue;
+      c.loseTrackOfPlayer(seconds);
+    }
   }
 
   private queryNeighbors(x: number, z: number, r: number): number[] {

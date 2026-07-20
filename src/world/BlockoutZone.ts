@@ -31,6 +31,7 @@ import type {
   Zone,
   ZoneBounds,
 } from './types';
+import type { PopEntry } from '../data/creatures';
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -287,6 +288,11 @@ export class BlockoutZone implements Zone {
   /** The blockout has no ecosystem (Phase 3 populates only the Shallow Veil). */
   getPopulationArea(): PopulationArea | null {
     return null;
+  }
+
+  /** The blockout has no ecosystem. */
+  getPopulation(): PopEntry[] {
+    return [];
   }
 
   /** No ecosystem, so no flora either. */

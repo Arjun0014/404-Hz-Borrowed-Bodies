@@ -45,7 +45,22 @@ export type HostArchetype = 'agile' | 'defensive' | 'skirmisher' | 'apex' | 'gen
 export type Locomotion = 'swim' | 'crawl';
 
 /** The active special ability a host can trigger (Phase 10). */
-export type AbilityKind = 'none' | 'slip' | 'brace' | 'burst' | 'inhale' | 'frenzy';
+export type AbilityKind =
+  | 'none'
+  | 'slip'
+  | 'brace'
+  | 'burst'
+  | 'inhale'
+  | 'frenzy'
+  // ---- Drowned Garden hosts ----
+  /** Firefly squid: an ink cloud that blinds pursuers and breaks their tracking. */
+  | 'ink'
+  /** Magnapinna: a long-range suction that visibly drags prey into its mouth. */
+  | 'suction'
+  /** Manta: a gliding barrel-roll that sheds damage and covers ground. */
+  | 'glide'
+  /** Megalodon: a devastating charge that swallows everything in its path. */
+  | 'rampage';
 
 export interface AbilityDef {
   kind: AbilityKind;
@@ -91,7 +106,15 @@ export interface SpeciesDef {
   locomotion: Locomotion;
   attack: AttackDef;
   ability: AbilityDef;
-  /** Per-host signal cost: multiplies the Connection rise (powerful bodies cost more). */
+  /**
+   * Per-host signal cost, multiplying the Connection rise.
+   *
+   * Currently 1.0 for EVERY host by design: varying it (and scaling by body
+   * size, which PlayerConnection also used to do) punished the player for
+   * earning a powerful body, which is the opposite of what the possession loop
+   * is meant to reward. The dial is kept so individual hosts can be made louder
+   * or quieter later as a deliberate authored choice, not as a size tax.
+   */
   connectionMult: number;
   /** One-line host identity for the HUD. */
   identity: string;
@@ -141,7 +164,7 @@ export const DARTFISH: SpeciesDef = {
   locomotion: 'swim',
   attack: { name: 'Nip', damageMult: 0.8, reachMult: 1.0, cooldown: 1.5, lungeSpeed: 20, sweep: false },
   ability: { kind: 'slip', name: 'Slip', cooldown: 6, duration: 0.4, desc: 'Evasive dart — a quick burst out of danger.' },
-  connectionMult: 0.9,
+  connectionMult: 1.0,
   identity: 'Agile scout — nimble and quiet, but fragile.',
 };
 
@@ -181,7 +204,7 @@ export const TUNA: SpeciesDef = {
   locomotion: 'swim',
   attack: { name: 'Slash', damageMult: 1.3, reachMult: 1.2, cooldown: 1.4, lungeSpeed: 24, sweep: false },
   ability: { kind: 'burst', name: 'Burst', cooldown: 6, duration: 0.7, desc: 'Sprint burst — close or escape.' },
-  connectionMult: 1.1,
+  connectionMult: 1.0,
   identity: 'Open-water cruiser — fast and relentless.',
 };
 
@@ -196,7 +219,7 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     archetype: 'agile',
     attack: { name: 'Nip', damageMult: 0.8, reachMult: 1.0, cooldown: 1.5, lungeSpeed: 20, sweep: false },
     ability: { kind: 'slip', name: 'Slip', cooldown: 6, duration: 0.4, desc: 'Evasive dart out of danger.' },
-    connectionMult: 0.9,
+    connectionMult: 1.0,
     identity: 'Agile scout — nimble and quiet, but fragile.',
   },
   crab: {
@@ -204,7 +227,7 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     locomotion: 'crawl',
     attack: { name: 'Pincer', damageMult: 1.7, reachMult: 0.9, cooldown: 1.7, lungeSpeed: 9, sweep: false },
     ability: { kind: 'brace', name: 'Brace', cooldown: 8, duration: 3, desc: 'Hunker down — halve incoming damage.' },
-    connectionMult: 0.6,
+    connectionMult: 1.0,
     identity: 'Armored seabed bruiser — walks, jumps, and pinches. Quiet to the signal.',
   },
   grouper: {
@@ -218,14 +241,44 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     archetype: 'skirmisher',
     attack: { name: 'Slash', damageMult: 1.5, reachMult: 1.2, cooldown: 1.4, lungeSpeed: 24, sweep: false },
     ability: { kind: 'burst', name: 'Burst', cooldown: 6, duration: 0.7, desc: 'Sprint burst — close or escape, scattering prey.' },
-    connectionMult: 1.2,
+    connectionMult: 1.0,
     identity: 'Hit-and-run striker — blazing fast, glass jaw.',
   },
+  // ---- Drowned Garden roster ----
+  fireflysquid: {
+    archetype: 'agile',
+    attack: { name: 'Beak', damageMult: 0.9, reachMult: 1.0, cooldown: 1.4, lungeSpeed: 22, sweep: false },
+    ability: { kind: 'ink', name: 'Ink', cooldown: 8, duration: 3, desc: 'Ink cloud — blinds and scatters anything hunting you.' },
+    connectionMult: 1.0,
+    identity: 'Living lantern — tiny and quick, and it can vanish.',
+  },
+  manta: {
+    archetype: 'skirmisher',
+    attack: { name: 'Sweep', damageMult: 1.2, reachMult: 1.4, cooldown: 1.6, lungeSpeed: 20, sweep: true },
+    ability: { kind: 'glide', name: 'Glide', cooldown: 7, duration: 2.5, desc: 'Soaring glide — long, fast, and hard to hit.' },
+    connectionMult: 1.0,
+    identity: 'Vast and unhurried — wide wings, wide reach.',
+  },
+  magnapinna: {
+    archetype: 'defensive',
+    attack: { name: 'Lash', damageMult: 1.4, reachMult: 1.8, cooldown: 1.7, lungeSpeed: 13, sweep: false },
+    ability: { kind: 'suction', name: 'Suction', cooldown: 9, duration: 1.6, desc: 'Draw everything nearby into your mouth and swallow it.' },
+    connectionMult: 1.0,
+    identity: 'Long-armed horror — it does not chase, it pulls.',
+  },
+  megalodon: {
+    archetype: 'apex',
+    attack: { name: 'Devour', damageMult: 2.6, reachMult: 1.4, cooldown: 1.7, lungeSpeed: 26, sweep: true },
+    ability: { kind: 'rampage', name: 'Rampage', cooldown: 14, duration: 5, desc: 'Unstoppable charge — speed, armour, and a maw that takes everything.' },
+    connectionMult: 1.0,
+    identity: 'The thing the cave is afraid of. Now it is you.',
+  },
+
   shark: {
     archetype: 'apex',
     attack: { name: 'Maw', damageMult: 2.0, reachMult: 1.25, cooldown: 1.6, lungeSpeed: 22, sweep: true },
     ability: { kind: 'frenzy', name: 'Frenzy', cooldown: 12, duration: 4, desc: 'Blood frenzy — a surge of speed and savage bite.' },
-    connectionMult: 1.4,
+    connectionMult: 1.0,
     identity: 'Apex terror — devours all in its path; the signal loves it.',
   },
 };

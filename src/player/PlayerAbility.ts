@@ -12,6 +12,7 @@ import { EAT_SIZE_RATIO } from '../data/creatures';
 
 const FWD = new Vector3();
 const ORIGIN = new Vector3();
+const PULL = new Vector3();
 
 /**
  * Per-host special ability (Phase 10), tapped on Q. Each curated host has one:
@@ -26,6 +27,8 @@ const ORIGIN = new Vector3();
 export class PlayerAbility {
   private cooldownT = 0;
   private activeT = 0;
+  /** Seconds of magnapinna suction left to run (see runSuction). */
+  private suctionT = 0;
 
   /** Fired when an ability activates (its name) — for HUD feedback. */
   onActivate: (name: string) => void = () => {};
@@ -43,6 +46,7 @@ export class PlayerAbility {
   reset(): void {
     this.cooldownT = 0;
     this.activeT = 0;
+    this.suctionT = 0;
   }
 
   /** True when the host actually has an ability to show. */
@@ -69,6 +73,7 @@ export class PlayerAbility {
   update(dt: number): void {
     if (this.cooldownT > 0) this.cooldownT -= dt;
     if (this.activeT > 0) this.activeT -= dt;
+    if (this.suctionT > 0) this.runSuction(dt);
     if (!this.input.consumeAbility()) return;
     const a = this.fish.species.ability;
     if (a.kind === 'none' || this.cooldownT > 0) return;
@@ -76,6 +81,56 @@ export class PlayerAbility {
     this.cooldownT = a.cooldown;
     this.activeT = a.duration;
     this.onActivate(a.name);
+  }
+
+  /**
+   * The magnapinna's suction, run continuously while active.
+   *
+   * The point is that you SEE it: creatures caught in the cone are physically
+   * hauled toward the mouth each frame, tumbling as they come, and are only
+   * swallowed once they actually arrive. Resolving it as a single instant
+   * area-hit would have been far less code and completely missed the effect —
+   * the horror is watching things fail to swim away.
+   */
+  private runSuction(dt: number): void {
+    this.suctionT -= dt;
+    this.controller.getForward(FWD);
+    // Mouth sits just ahead of the head; everything is dragged to this point.
+    ORIGIN.copy(this.controller.pos).addScaledVector(FWD, this.fish.length * 0.45);
+
+    const reach = this.fish.length * 5.5;
+    const eatMax = this.fish.length / EAT_SIZE_RATIO;
+    const list = this.ecosystem.list;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (!c.alive) continue;
+      PULL.subVectors(ORIGIN, c.pos);
+      const d = PULL.length();
+      if (d > reach || d < 1e-3) continue;
+      // Only what is in FRONT gets pulled — a suction, not an aura.
+      if (-PULL.dot(FWD) / d < 0.1) continue;
+
+      // Pull hardest at the mouth, so prey accelerates as it loses the fight.
+      const grip = 1 - d / reach;
+      const speed = 14 + grip * 34;
+      c.pos.addScaledVector(PULL.normalize(), speed * dt);
+      // Kill their own steering for a moment so they visibly stop swimming away.
+      c.vel.multiplyScalar(0.86);
+      c.stun(0.25);
+
+      // Swallowed on arrival.
+      if (d < this.fish.length * 0.7) {
+        if (c.length <= eatMax) {
+          c.die();
+          this.ecosystem.onPlayerKill(c);
+          this.combat.heal(9);
+          this.combat.onFeed(c.length * 1.4);
+        } else {
+          // Too big to swallow — it still gets mauled against the beak.
+          c.takeDamage(28);
+        }
+      }
+    }
   }
 
   private trigger(kind: AbilityKind, duration: number): void {
@@ -121,6 +176,47 @@ export class PlayerAbility {
         if (res.biomass > 0) this.combat.onFeed(res.biomass); // eating grows the host
         this.camera.punch(8);
         this.sfx.biteLanded();
+        break;
+      }
+      case 'ink': {
+        // Vanish. The cloud itself is the ecosystem's existing "prey scatter"
+        // signal turned against hunters: everything nearby loses track of the
+        // host, and the host gets i-frames and a dart to break line of sight.
+        this.ecosystem.alertPrey();
+        this.ecosystem.blindHunters(duration);
+        this.combat.iframes(0.8);
+        this.controller.lunge(22);
+        this.camera.punch(10);
+        this.sfx.possessFail(); // a muffled, wrong-sounding whump suits ink
+        break;
+      }
+      case 'glide': {
+        // A long, fast, low-drag soar — distance and evasion rather than damage.
+        this.controller.boost(1.75, duration);
+        this.combat.iframes(0.5);
+        this.camera.punch(8);
+        this.sfx.biteSwing(0.6);
+        break;
+      }
+      case 'suction': {
+        // The magnapinna's whole identity. Everything in a wide cone ahead is
+        // physically DRAGGED toward the mouth over the ability's duration and
+        // swallowed on arrival — see PlayerAbility.update, which runs the pull
+        // each frame rather than resolving it in one instant hit.
+        this.suctionT = duration;
+        this.camera.punch(6);
+        this.sfx.stunHit();
+        break;
+      }
+      case 'rampage': {
+        // Apex of apexes: speed, damage soak, and a maw wide enough that the
+        // charge itself is the attack.
+        this.controller.boost(1.7, duration);
+        this.combat.guard(0.45, duration);
+        this.combat.iframes(0.6);
+        this.combat.heal(this.combat.maxHealth * 0.08);
+        this.camera.punch(24);
+        this.sfx.carrierDeath();
         break;
       }
       case 'frenzy': {

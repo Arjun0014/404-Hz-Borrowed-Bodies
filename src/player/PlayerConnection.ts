@@ -13,9 +13,19 @@
  */
 
 // --- tuning (the pressure curve; exposed for balancing) ---
-const RISE_PER_SEC = 0.010; // gain/sec at sensitivity 1.0 (≈100 s to full, no swaps)
-const SENS_BASE = 0.55; // a tiny host still draws the signal
-const SENS_PER_LEN = 0.22; // ...and a bigger body draws it much faster
+const RISE_PER_SEC = 0.010; // gain/sec (≈100 s to full, no swaps)
+/**
+ * Connection no longer scales with host SIZE.
+ *
+ * It used to: a 6 m shark drew the entity ~2.8x faster than a 0.5 m fish, on the
+ * theory that powerful bodies should cost more signal. In play that punished the
+ * exact thing the game rewards you for achieving — you finally take a big body
+ * and it immediately starts killing you faster — so growing and possessing
+ * upward felt like a trap rather than a payoff. The pressure is now identical in
+ * every creature, and the per-species `connectionMult` (species.ts) remains as
+ * the deliberate, authored dial for hosts that should be louder or quieter.
+ */
+const SENS_FLAT = 1.0;
 const CONTAM_DECAY_PER_SEC = 0.04; // a used species reads "fresh" again after ~25 s
 const FRESH_REDUCTION = 0.45; // a fully-fresh possession drops Connection this much
 const MIN_REDUCTION = 0.04; // even a contaminated re-entry gives a token dip
@@ -53,16 +63,16 @@ export class PlayerConnection {
     return 'calm';
   }
 
-  /** Connection-gain multiplier for a host of the given body length. */
-  static sensitivity(hostLength: number): number {
-    return SENS_BASE + hostLength * SENS_PER_LEN;
+  /** Connection-gain multiplier. Flat: body size no longer affects the pace. */
+  static sensitivity(_hostLength: number): number {
+    return SENS_FLAT;
   }
 
-  /** Connection gained per second in a host of this length — the pressure's pace.
+  /** Connection gained per second — the pressure's pace, identical in every body.
    *  connMult is the host's per-species signal cost (species.ts connectionMult).
-   *  Other systems (e.g. passive Resonance) can mirror this to move in lockstep. */
-  static riseRate(hostLength: number, connMult = 1): number {
-    return RISE_PER_SEC * this.sensitivity(hostLength) * connMult;
+   *  Other systems (e.g. passive Resonance) mirror this to move in lockstep. */
+  static riseRate(_hostLength: number, connMult = 1): number {
+    return RISE_PER_SEC * SENS_FLAT * connMult;
   }
 
   /** Rise over time (scaled by host size AND per-host signal cost) and decay the

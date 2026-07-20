@@ -41,6 +41,8 @@ import type {
   Zone,
   ZoneBounds,
 } from './types';
+import { SHALLOW_VEIL_POP } from '../data/creatures';
+import type { PopEntry } from '../data/creatures';
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -867,6 +869,11 @@ export class ShallowVeil implements Zone {
     const x = -30;
     const z = 95;
     return out.set(x, this.terrain.heightAt(x, z), z);
+  }
+
+  /** This zone's creature mix. */
+  getPopulation(): PopEntry[] {
+    return SHALLOW_VEIL_POP;
   }
 
   /** The shelf uses the shared reef-flora set, across its whole population area. */

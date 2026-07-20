@@ -58,6 +58,8 @@ const PLAYER_BITE_DAMAGE: Record<string, number> = {
   grouper: 10,
   barracuda: 15,
   shark: 34,
+  magnapinna: 20,
+  megalodon: 52, // the Drowned Garden's boss hits like nothing on the shelf
 };
 
 export type CreatureState =
@@ -134,6 +136,8 @@ export class Creature {
   provokedT = 0;
   /** Seconds left in a Dead Signal Field frenzy (Phase 13). Refreshed while inside. */
   frenzyT = 0;
+  /** Seconds left blinded by an ink cloud — cannot perceive the host at all. */
+  blindT = 0;
   private frenzyBiteCd = 0;
 
   /** This predator is currently going for the player. */
@@ -188,6 +192,7 @@ export class Creature {
     this.provokedT = 0;
     this.frenzyT = 0;
     this.frenzyBiteCd = 0;
+    this.blindT = 0;
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.yaw = Math.random() * Math.PI * 2;
@@ -250,6 +255,18 @@ export class Creature {
     if (this.species.role === 'crab') this.crabThink(ctx, dt);
     else if (this.frenzyT > 0) this.frenzyThink(ctx);
     else this.fishThink(ctx, dt);
+  }
+
+  /**
+   * Ink cloud: forget about the host completely for a while. Clears the active
+   * hunt, the apex's grudge, and any lock on the player, so pursuers actually
+   * peel off instead of circling — the squid's escape has to read as vanishing.
+   */
+  loseTrackOfPlayer(seconds: number): void {
+    this.huntPlayer = false;
+    this.provokedT = 0;
+    this.blindT = Math.max(this.blindT, seconds);
+    this.target = null;
   }
 
   /** Drag this creature into a Dead Signal Field frenzy (Ecosystem's director). */
@@ -400,6 +417,7 @@ export class Creature {
       }
     }
     const canEatPlayer =
+      this.blindT <= 0 &&
       ctx.playerAlive &&
       sp.role === 'predator' &&
       (enraged || this.length >= ctx.playerLength * EAT_SIZE_RATIO) &&
@@ -685,6 +703,7 @@ export class Creature {
     }
     if (this.hpBarTimer > 0) this.hpBarTimer -= dt;
     if (this.provokedT > 0) this.provokedT -= dt;
+    if (this.blindT > 0) this.blindT -= dt;
     this.orient(dt);
     this.inst.root.position.copy(this.pos);
   }

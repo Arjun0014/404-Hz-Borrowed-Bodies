@@ -12,6 +12,10 @@ import randomFish3Url from '../../assets/random_fish_3.glb?url';
 import randomFish4Url from '../../assets/random_fish_4.glb?url';
 import crabUrl from '../../assets/crab.glb?url';
 import sharkUrl from '../../assets/shark.glb?url';
+import megalodonUrl from '../../assets/shark_megalodon.glb?url';
+import mantaUrl from '../../assets/drowned garden/manta.glb?url';
+import magnapinnaUrl from '../../assets/drowned garden/magnapinna_squid.glb?url';
+import fireflySquidUrl from '../../assets/drowned garden/firefly-squid-glowing.glb?url';
 
 /**
  * prey     — schooling fish; flees anything that can eat it.
@@ -148,6 +152,39 @@ export const SPECIES: CreatureSpecies[] = [
     senseRadius: 52, schooling: false, hungerRate: 0.06, animSpeed: 0.95, procedural: false,
   },
 
+  // ================= The Drowned Garden =================
+  // Deep-cave fauna. These only populate depth 1+; the Shallow Veil's
+  // population list does not reference them.
+
+  // ---- firefly squid: small, glowing, schools in the dark ----
+  {
+    id: 'fireflysquid', displayName: 'Firefly Squid', modelUrl: fireflySquidUrl,
+    baseLength: 0.8, baseHealth: 22, wildMaxGrowth: 0.5, flipForward: false,
+    role: 'prey', maxSpeed: 5.4, accel: 20, drag: 2.1, turnRate: 4.2,
+    senseRadius: 14, schooling: true, hungerRate: 0, animSpeed: 1.3, procedural: false,
+  },
+  // ---- manta: huge, placid, glides the vault; a superb body to wear ----
+  {
+    id: 'manta', displayName: 'Manta', modelUrl: mantaUrl,
+    baseLength: 4.5, baseHealth: 90, wildMaxGrowth: 0.3, flipForward: false,
+    role: 'forager', maxSpeed: 7.4, accel: 14, drag: 1.4, turnRate: 2.0,
+    senseRadius: 30, schooling: false, hungerRate: 0.03, animSpeed: 0.8, procedural: false,
+  },
+  // ---- magnapinna: long-armed ambusher that inhales whatever drifts close ----
+  {
+    id: 'magnapinna', displayName: 'Magnapinna', modelUrl: magnapinnaUrl,
+    baseLength: 5.2, baseHealth: 110, wildMaxGrowth: 0.28, flipForward: false,
+    role: 'predator', maxSpeed: 6.0, accel: 15, drag: 1.6, turnRate: 2.2,
+    senseRadius: 34, schooling: false, hungerRate: 0.07, animSpeed: 0.9, procedural: false,
+  },
+  // ---- megalodon: the cavern's boss. One of them, and it owns the place ----
+  {
+    id: 'megalodon', displayName: 'Megalodon', modelUrl: megalodonUrl,
+    baseLength: 11, baseHealth: 260, wildMaxGrowth: 0.18, flipForward: false,
+    role: 'predator', apex: true, maxSpeed: 13.5, accel: 26, drag: 1.25, turnRate: 1.8,
+    senseRadius: 64, schooling: false, hungerRate: 0.06, animSpeed: 0.85, procedural: false,
+  },
+
   // ---- crab (seabed ambusher) — big enough to read clearly on the seabed ----
   {
     id: 'crab', displayName: 'Reef Crab', modelUrl: crabUrl, baseLength: 2.7, baseHealth: 70,
@@ -195,4 +232,24 @@ export const SHALLOW_VEIL_POP: PopEntry[] = [
   { speciesId: 'barracuda', count: 4 },
   { speciesId: 'shark', count: 2 },
   { speciesId: 'crab', count: 8 },
+];
+
+/**
+ * Populates the Drowned Garden. Leaner than the shelf — a dark cave should feel
+ * sparse and dangerous rather than busy — and weighted toward the cavern's own
+ * fauna, with a handful of familiar shelf species so the ecosystem still reads
+ * as continuous. Exactly one megalodon: it is the zone's boss, not a population.
+ */
+export const DROWNED_GARDEN_POP: PopEntry[] = [
+  { speciesId: 'fireflysquid', count: 30, schoolSize: 10 }, // glowing bait balls
+  { speciesId: 'fry', count: 24, schoolSize: 12 },
+  { speciesId: 'silverside', count: 16 },
+  { speciesId: 'anchovy', count: 14 },
+  { speciesId: 'wrasse', count: 8 },
+  { speciesId: 'manta', count: 6 },
+  { speciesId: 'grouper', count: 5 },
+  { speciesId: 'magnapinna', count: 5 },
+  { speciesId: 'barracuda', count: 4 },
+  { speciesId: 'crab', count: 8 },
+  { speciesId: 'megalodon', count: 1 },
 ];

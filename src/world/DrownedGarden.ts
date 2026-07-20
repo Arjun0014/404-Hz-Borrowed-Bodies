@@ -21,6 +21,7 @@ import {
   Points,
   Quaternion,
   RepeatWrapping,
+  RingGeometry,
   type Scene,
   ShaderMaterial,
   Shape,
@@ -40,6 +41,8 @@ import type {
   Zone,
   ZoneBounds,
 } from './types';
+import { DROWNED_GARDEN_POP } from '../data/creatures';
+import type { PopEntry } from '../data/creatures';
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -669,8 +672,8 @@ export class DrownedGarden implements Zone {
     // cave. What the exit wants to be is a dark drain in the seabed with a
     // slow swirl on its surface — you find it by looking down, and it says
     // "down" rather than "up".
-    const height = 16;
-    const geo = new CylinderGeometry(w.radius, w.radius * 0.3, height, 40, 4, true);
+    const height = 34;
+    const geo = new CylinderGeometry(w.radius, w.radius * 0.28, height, 44, 4, true);
     this.disposables.push(geo);
 
     this.whirlMat = new ShaderMaterial({
@@ -701,33 +704,59 @@ export class DrownedGarden implements Zone {
           // The throat stays black, but the rim has to CATCH — this is the way
           // out of the zone and the player has to be able to find it across a
           // dark cavern. Brightness climbs sharply toward the mouth of the shaft.
-          float rim = pow(vY, 1.5);
-          vec3 murk = vec3(0.01, 0.03, 0.05);
-          vec3 glint = vec3(0.42, 0.86, 0.98);
-          vec3 col = mix(murk, glint, bands * rim);
-          col += glint * rim * 0.35;
-          float a = 0.55 + bands * 0.4 * rim;
+          // Strongly lit at the mouth, falling to pure black down the throat.
+          // The gradient IS the depth cue — a uniformly dark shaft is
+          // indistinguishable from the cave floor around it.
+          float rim = pow(vY, 1.2);
+          vec3 murk = vec3(0.005, 0.015, 0.03);
+          vec3 glint = vec3(0.50, 0.95, 1.0);
+          vec3 col = mix(murk, glint, bands * rim * 1.2);
+          col += glint * rim * rim * 1.1;
+          float a = 0.7 + bands * 0.3 * rim;
           gl_FragColor = vec4(col, a);
         }
       `,
     });
     this.disposables.push(this.whirlMat);
 
-    // Sunk into the seabed so only the mouth of the shaft shows.
+    // The shaft, sunk so only its mouth shows. It runs deep and its walls are
+    // solid, so looking in you see a hole going somewhere rather than a decal
+    // painted on the seabed.
     const mesh = new Mesh(geo, this.whirlMat);
     mesh.position.set(w.x, floor - height * 0.42, w.z);
     mesh.renderOrder = 3;
     mesh.name = 'whirlpool';
     this.group.add(mesh);
 
+    // A hard black void filling the shaft. Unlit, unfogged, drawn behind the
+    // swirl: this is what actually makes it read as an opening to somewhere
+    // else rather than a lit basin — you cannot see a bottom.
+    // Its top MUST stay below the shaft's mouth. Sized generously it rose above
+    // the seabed and, being opaque black, covered the hole, the swirl, and the
+    // rim halo completely — the exit rendered as a patch of nothing.
+    const voidH = height * 1.2;
+    const voidGeo = new CylinderGeometry(w.radius * 0.9, w.radius * 0.28, voidH, 32, 1, true);
+    const voidMat = new MeshBasicMaterial({ color: 0x000000, fog: false, side: DoubleSide });
+    const voidMesh = new Mesh(voidGeo, voidMat);
+    // Top of the cylinder sits 8 m under the seabed, so it only ever lines the
+    // inside of the shaft and never breaches the floor.
+    voidMesh.position.set(w.x, floor - 8 - voidH * 0.5, w.z);
+    voidMesh.name = 'whirlpool-void';
+    voidMesh.renderOrder = 2;
+    this.group.add(voidMesh);
+    this.disposables.push(voidGeo, voidMat);
+
     // A wide, faint ring lying on the basin lip. Unlit and fog-exempt, so the
     // exit is findable from across the cavern the way the Carrier's beacon is.
-    const haloGeo = new CircleGeometry(w.radius * 2.2, 40);
+    // A RING, not a disc. As a filled circle it covered the shaft's mouth
+    // completely and the exit read as a flat teal puddle painted on the floor —
+    // the hole has to stay visibly open in the middle.
+    const haloGeo = new RingGeometry(w.radius * 0.92, w.radius * 1.55, 48);
     haloGeo.rotateX(-Math.PI / 2);
     const haloMat = new MeshBasicMaterial({
       color: 0x4fd6ee,
       transparent: true,
-      opacity: 0.13,
+      opacity: 0.55,
       depthWrite: false,
       blending: AdditiveBlending,
       fog: false,
@@ -740,12 +769,13 @@ export class DrownedGarden implements Zone {
     this.group.add(halo);
     this.disposables.push(haloGeo, haloMat);
 
-    // A dark disc capping the bottom so you cannot see out through the shaft.
-    const capGeo = new CircleGeometry(w.radius * 0.32, 24);
+    // Cap the very bottom so nothing shows through from outside the map. Set
+    // deep enough that the player never sees it as a floor.
+    const capGeo = new CircleGeometry(w.radius * 0.3, 24);
     capGeo.rotateX(-Math.PI / 2);
-    const capMat = new MeshBasicMaterial({ color: 0x010406, fog: false });
+    const capMat = new MeshBasicMaterial({ color: 0x000000, fog: false });
     const cap = new Mesh(capGeo, capMat);
-    cap.position.set(w.x, floor - height * 0.9, w.z);
+    cap.position.set(w.x, floor - height * 1.15, w.z);
     cap.name = 'whirlpool-floor';
     this.group.add(cap);
     this.disposables.push(capGeo, capMat);
@@ -868,6 +898,11 @@ export class DrownedGarden implements Zone {
     };
   }
 
+  /** This zone's creature mix. */
+  getPopulation(): PopEntry[] {
+    return DROWNED_GARDEN_POP;
+  }
+
   /**
    * The cave grows its own vegetation (see GardenDressing), so the shared reef
    * flora must not plant here. Returning its area anyway scattered the Shallow
@@ -900,60 +935,37 @@ export class DrownedGarden implements Zone {
     return Math.hypot(pos.x - w.x, pos.z - w.z) < w.radius * 0.45;
   }
 
-  /** Declining the descent throws you back out of the vortex. */
+  /**
+   * Declining the descent lifts you clear of the hole and pushes you off its
+   * lip. Nothing pulls back any more, so this actually succeeds — previously the
+   * whirlpool's suction cancelled it and left the player wedged in the basin.
+   */
   repelFromDescent(pos: Vector3, vel: Vector3, dt: number): boolean {
     const w = CAVE.whirlpool;
     const dx = pos.x - w.x;
     const dz = pos.z - w.z;
     const d = Math.hypot(dx, dz);
-    if (d > w.radius * 1.3) return true;
+    const lipY = this.terrain.heightAt(w.x + w.radius * 2.6, w.z) + 12;
+    // Done once clear of the mouth horizontally AND back up above the basin rim.
+    if (d > w.radius * 1.5 && pos.y > lipY - 6) return true;
+    // Rise first: being under the lip is what traps you.
+    vel.y += 46 * dt;
     if (d < 1e-3) {
       vel.x += 40 * dt;
       return false;
     }
-    // Fling outward along the radius, plus a shove upward out of the funnel.
-    vel.x += (dx / d) * 90 * dt;
-    vel.z += (dz / d) * 90 * dt;
-    vel.y += 26 * dt;
+    vel.x += (dx / d) * 70 * dt;
+    vel.z += (dz / d) * 70 * dt;
     return false;
   }
 
-  /**
-   * Ambient water movement, applied to the player every frame by SwimController.
-   *
-   * Two currents define how this zone is entered and left. A strong inward draft
-   * across the mouth means arriving in the approach carries you INTO the cave
-   * and trying to leave means fighting it — the zone closes behind you without
-   * needing an invisible wall. And the whirlpool in the far corner pulls with a
-   * tangential swirl, so its edge is survivable and its throat is not.
-   */
-  currentAt(pos: Vector3, out: Vector3): Vector3 {
-    out.set(0, 0, 0);
-
-    // The mouth draft is GONE. A per-frame force pushing against the player's
-    // own input reads as input lag and rubber-banding, however physically
-    // reasonable it is — you press forward and the world argues with you. The
-    // zone's soft bounds already stop you leaving (there is nothing out in the
-    // approach but water), and arrival now uses a single inward impulse at
-    // spawn instead of a permanent shove. Only the whirlpool pulls.
-
-    // --- the whirlpool ---
-    const w = CAVE.whirlpool;
-    const dx = pos.x - w.x;
-    const dz = pos.z - w.z;
-    const d = Math.hypot(dx, dz);
-    if (d < w.radius * 1.9 && d > 1e-3) {
-      const pull = 1 - smoothstep(0, w.radius * 1.9, d);
-      const nx = dx / d;
-      const nz = dz / d;
-      // Inward, plus a tangential spin so it reads as a vortex not a magnet.
-      // Gentler swirl, stronger down-draught: a drain, not a tornado.
-      out.x += (-nx * 14 - nz * 12) * pull;
-      out.z += (-nz * 14 + nx * 12) * pull;
-      out.y -= 16 * pull * pull;
-    }
-    return out;
-  }
+  // There is deliberately NO currentAt() in this zone any more.
+  //
+  // The whirlpool used to suck the player in every frame. That fought
+  // repelFromDescent directly — decline the descent and the suction immediately
+  // dragged you back down, so you were pinned in the basin unable to leave — and
+  // a standing force against player input reads as lag regardless. The hole is
+  // now simply a place you swim into, and swim out of.
 
   // ---- frame update -------------------------------------------------------
 

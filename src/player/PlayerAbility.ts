@@ -121,13 +121,15 @@ export class PlayerAbility {
       // Swallowed on arrival.
       if (d < this.fish.length * 0.7) {
         if (c.length <= eatMax) {
+          this.ecosystem.onBloodHit(c.pos, c.length, true);
           c.die();
           this.ecosystem.onPlayerKill(c);
           this.combat.heal(9);
           this.combat.onFeed(c.length * 1.4);
         } else {
           // Too big to swallow — it still gets mauled against the beak.
-          c.takeDamage(28);
+          const dead = c.takeDamage(28);
+          this.ecosystem.onBloodHit(c.pos, c.length, dead);
         }
       }
     }

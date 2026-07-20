@@ -82,11 +82,14 @@ export const SPECIES: CreatureSpecies[] = [
     role: 'prey', maxSpeed: 4.6, accel: 20, drag: 2.2, turnRate: 4.6,
     senseRadius: 11, schooling: true, hungerRate: 0, animSpeed: 1.6, procedural: false,
   },
-  // ---- clownfish: same species as the player's starter host; ambient shoals ----
+  // ---- barracuda: the player's starter species; small, darty, schooling ----
+  // Swapped with the clownfish: its darting movement is the best-feeling thing
+  // in the game to control, so it is the body you start in. The name and model
+  // stay with their own creature; only the ecological SLOT was exchanged.
   {
-    id: 'clownfish', displayName: 'Clownfish', modelUrl: clownFishUrl, baseLength: 0.5, baseHealth: 20,
+    id: 'barracuda', displayName: 'Barracuda', modelUrl: randomFish4Url, baseLength: 0.5, baseHealth: 20,
     wildMaxGrowth: 0.6, flipForward: false,
-    role: 'prey', maxSpeed: 5.2, accel: 21, drag: 2.1, turnRate: 4.4,
+    role: 'prey', maxSpeed: 5.6, accel: 23, drag: 2.1, turnRate: 4.6,
     senseRadius: 12, schooling: true, hungerRate: 0, animSpeed: 1.5, procedural: false,
   },
   // ---- regal angelfish: low-poly reef fish; graceful mid-water shoals ----
@@ -137,8 +140,9 @@ export const SPECIES: CreatureSpecies[] = [
     role: 'predator', maxSpeed: 6.6, accel: 19, drag: 1.5, turnRate: 2.6,
     senseRadius: 28, schooling: false, hungerRate: 0.07, animSpeed: 1.0, procedural: false,
   },
+  // ---- clownfish: now the shelf's fast hunting predator (see the swap above) ----
   {
-    id: 'barracuda', displayName: 'Barracuda', modelUrl: randomFish4Url, baseLength: 3.2, baseHealth: 66,
+    id: 'clownfish', displayName: 'Clownfish', modelUrl: clownFishUrl, baseLength: 3.2, baseHealth: 66,
     wildMaxGrowth: 0.32, flipForward: false,
     role: 'predator', maxSpeed: 8.6, accel: 24, drag: 1.4, turnRate: 3.0,
     senseRadius: 32, schooling: false, hungerRate: 0.08, animSpeed: 1.1, procedural: false,
@@ -241,15 +245,24 @@ export const SHALLOW_VEIL_POP: PopEntry[] = [
  * as continuous. Exactly one megalodon: it is the zone's boss, not a population.
  */
 export const DROWNED_GARDEN_POP: PopEntry[] = [
-  { speciesId: 'fireflysquid', count: 30, schoolSize: 10 }, // glowing bait balls
-  { speciesId: 'fry', count: 24, schoolSize: 12 },
-  { speciesId: 'silverside', count: 16 },
-  { speciesId: 'anchovy', count: 14 },
-  { speciesId: 'wrasse', count: 8 },
-  { speciesId: 'manta', count: 6 },
-  { speciesId: 'grouper', count: 5 },
+  // Weighted hard toward the CHEAP models, because the cavern felt lonely and
+  // the only affordable way to fix that is volume of low-poly fish. Per-model
+  // costs: firefly squid 1,562 tris, fry/silverside 534, anchovy 806,
+  // barracuda 2,174, angelfish 292, clownfish 276. The expensive hunters stay
+  // rare, which is also what makes running into one mean something.
+  { speciesId: 'fireflysquid', count: 54, schoolSize: 14 }, // glowing bait balls
+  { speciesId: 'fry', count: 60, schoolSize: 15 },
+  { speciesId: 'angelfish', count: 40, schoolSize: 10 },
+  { speciesId: 'barracuda', count: 36, schoolSize: 12 }, // the small starter species
+  { speciesId: 'silverside', count: 34 },
+  { speciesId: 'anchovy', count: 28 },
+  { speciesId: 'sardine', count: 12 },
+  { speciesId: 'wrasse', count: 12 },
+  { speciesId: 'angel', count: 10 },
+  { speciesId: 'manta', count: 7 },
+  { speciesId: 'grouper', count: 6 },
   { speciesId: 'magnapinna', count: 5 },
-  { speciesId: 'barracuda', count: 4 },
-  { speciesId: 'crab', count: 8 },
+  { speciesId: 'clownfish', count: 4 }, // now the fast predator
+  { speciesId: 'crab', count: 10 },
   { speciesId: 'megalodon', count: 1 },
 ];

@@ -35,6 +35,7 @@ import { SwimController } from '../player/SwimController';
 import { PlayerCamera } from '../player/PlayerCamera';
 import { Bubbles } from '../entities/Bubbles';
 import { UnderwaterFx } from '../render/UnderwaterFx';
+import { BloodFx } from '../render/BloodFx';
 import { DARTFISH } from '../data/species';
 import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
@@ -59,6 +60,7 @@ const LOCK_AIM = new Vector3();
 const LOCK_TO = new Vector3();
 const LOCK_PROJ = new Vector3();
 const CARRIER_ANCHOR = new Vector3();
+const BLOOD_DIR = new Vector3();
 const CARRIER_PROJ = new Vector3();
 
 // Signal Carrier HUD ranges.
@@ -98,6 +100,7 @@ export class GameApp {
   private playerCamera!: PlayerCamera;
   private bubbles!: Bubbles;
   private fx!: UnderwaterFx;
+  private blood!: BloodFx;
   private ecosystem!: Ecosystem;
   private flora!: Flora;
   private combat!: PlayerCombat;
@@ -265,6 +268,9 @@ export class GameApp {
     this.bubbles = new Bubbles(this.scene);
     this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
     this.fx = new UnderwaterFx(this.renderer, this.scene, this.playerCamera.camera);
+    // Blood, gore, and the clouds they leave. Lives on the scene, not the zone,
+    // so it survives descents and keeps running through a zone swap.
+    this.blood = new BloodFx(this.scene);
 
     // Seabed forest: load flora models once, then scatter them on this zone
     // (before the ecosystem, so big-coral colliders are in place for the fish).
@@ -307,6 +313,13 @@ export class GameApp {
     this.dominance = new Dominance(this.runState);
     this.score = new Score(this.runState);
     this.ecosystem.onPlayerKill = (c) => this.recordKill(c);
+    // Blood follows the bite direction, so spray and chunks fly the way the
+    // jaws were travelling rather than puffing symmetrically.
+    this.ecosystem.onBloodHit = (at, scale, died) => {
+      this.controller.getForward(BLOOD_DIR);
+      if (died) this.blood.kill(at, BLOOD_DIR, scale);
+      else this.blood.hit(at, BLOOD_DIR, scale);
+    };
     this.combat.onCarrierHit = (nodeKilled, died) => this.onCarrierHit(nodeKilled, died);
     this.dominance.onRankUp = (name) => this.onDominanceRankUp(name);
     this.dominance.onWeakCapped = () =>
@@ -489,6 +502,7 @@ export class GameApp {
       );
     }
 
+    this.blood.update(dt, this.playerCamera.camera.position);
     this.fx.render(dt, speed);
     this.debug.update(
       dt,

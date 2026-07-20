@@ -1,5 +1,4 @@
 import {
-  AdditiveBlending,
   BufferAttribute,
   BufferGeometry,
   CircleGeometry,
@@ -21,7 +20,6 @@ import {
   Points,
   Quaternion,
   RepeatWrapping,
-  RingGeometry,
   type Scene,
   ShaderMaterial,
   Shape,
@@ -100,7 +98,6 @@ export class DrownedGarden implements Zone {
   private particles!: Points;
   private rockTexture: Texture | null = null;
   private garden: GardenDressing | null = null;
-  private whirlMat!: ShaderMaterial;
   private readonly disposables: { dispose(): void }[] = [];
 
   constructor(scene: Scene) {
@@ -656,129 +653,88 @@ export class DrownedGarden implements Zone {
   // ---- the whirlpool (the way down) ---------------------------------------
 
   /**
-   * A vortex in the far corner of the cavern: a wide cone of spinning water
-   * reaching from the floor toward the vault. It is the zone's exit, so it has
-   * to be visible across a very large room — hence an emissive, unlit,
-   * fog-exempt shader rather than anything lit.
+   * The way down: a hole in the seabed full of very dark water, ringed on one
+   * side by a few rock towers.
    *
-   * The pull itself lives in `currentAt`, so what you see and what drags you are
-   * driven from the same CAVE.whirlpool definition.
+   * Rebuilt simple. The previous version layered a swirling shader cone, a black
+   * void cylinder, a rim halo and a floor cap, and the pieces fought each other —
+   * the void breached the seabed and hid everything else, so the exit rendered as
+   * a patch of nothing. This is two meshes and no shader: a dark disc you can see
+   * from across the cavern, and a shaft wall behind it for depth.
    */
   private buildWhirlpool(): void {
     const w = CAVE.whirlpool;
     const floor = this.terrain.heightAt(w.x, w.z);
-    // A HOLE IN THE FLOOR, not a tornado. The first pass was a 120 m cone
-    // reaching for the vault, which read as a weather event in the middle of a
-    // cave. What the exit wants to be is a dark drain in the seabed with a
-    // slow swirl on its surface — you find it by looking down, and it says
-    // "down" rather than "up".
-    const height = 34;
-    const geo = new CylinderGeometry(w.radius, w.radius * 0.28, height, 44, 4, true);
-    this.disposables.push(geo);
 
-    this.whirlMat = new ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
+    // The water surface of the hole: a flat disc of very dark water, sitting
+    // just below the seabed lip so it reads as a pool rather than a lid.
+    const poolGeo = new CircleGeometry(w.radius, 44);
+    poolGeo.rotateX(-Math.PI / 2);
+    const poolMat = new MeshBasicMaterial({ color: 0x04141c, fog: false });
+    const pool = new Mesh(poolGeo, poolMat);
+    pool.position.set(w.x, floor - 1.5, w.z);
+    pool.name = 'whirlpool';
+    this.group.add(pool);
+    this.disposables.push(poolGeo, poolMat);
+
+    // A short wall below the rim so looking in from an angle shows depth rather
+    // than the disc floating over open cave.
+    const wallGeo = new CylinderGeometry(w.radius, w.radius * 0.86, 26, 44, 1, true);
+    const wallMat = new MeshStandardMaterial({
+      color: 0x121a1e,
+      roughness: 1,
+      metalness: 0,
       side: DoubleSide,
-      fog: false,
-      blending: AdditiveBlending,
-      uniforms: { uTime: { value: 0 } },
-      vertexShader: /* glsl */ `
-        varying vec2 vUv;
-        varying float vY;
-        void main() {
-          vUv = uv;
-          vY = uv.y;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        uniform float uTime;
-        varying vec2 vUv;
-        varying float vY;
-        void main() {
-          // A slow swirl on the wall of the shaft. Gentle — this is water
-          // turning over a drain, not a vortex.
-          float spin = vUv.x * 8.0 - vY * 3.0 + uTime * 0.5;
-          float bands = pow(0.5 + 0.5 * sin(spin * 3.14159), 2.0);
-          // The throat stays black, but the rim has to CATCH — this is the way
-          // out of the zone and the player has to be able to find it across a
-          // dark cavern. Brightness climbs sharply toward the mouth of the shaft.
-          // Strongly lit at the mouth, falling to pure black down the throat.
-          // The gradient IS the depth cue — a uniformly dark shaft is
-          // indistinguishable from the cave floor around it.
-          float rim = pow(vY, 1.2);
-          vec3 murk = vec3(0.005, 0.015, 0.03);
-          vec3 glint = vec3(0.50, 0.95, 1.0);
-          vec3 col = mix(murk, glint, bands * rim * 1.2);
-          col += glint * rim * rim * 1.1;
-          float a = 0.7 + bands * 0.3 * rim;
-          gl_FragColor = vec4(col, a);
-        }
-      `,
+      map: this.rockTexture ?? undefined,
     });
-    this.disposables.push(this.whirlMat);
+    const wall = new Mesh(wallGeo, wallMat);
+    wall.position.set(w.x, floor - 14, w.z);
+    wall.name = 'whirlpool-shaft';
+    this.group.add(wall);
+    this.disposables.push(wallGeo, wallMat);
 
-    // The shaft, sunk so only its mouth shows. It runs deep and its walls are
-    // solid, so looking in you see a hole going somewhere rather than a decal
-    // painted on the seabed.
-    const mesh = new Mesh(geo, this.whirlMat);
-    mesh.position.set(w.x, floor - height * 0.42, w.z);
-    mesh.renderOrder = 3;
-    mesh.name = 'whirlpool';
-    this.group.add(mesh);
-
-    // A hard black void filling the shaft. Unlit, unfogged, drawn behind the
-    // swirl: this is what actually makes it read as an opening to somewhere
-    // else rather than a lit basin — you cannot see a bottom.
-    // Its top MUST stay below the shaft's mouth. Sized generously it rose above
-    // the seabed and, being opaque black, covered the hole, the swirl, and the
-    // rim halo completely — the exit rendered as a patch of nothing.
-    const voidH = height * 1.2;
-    const voidGeo = new CylinderGeometry(w.radius * 0.9, w.radius * 0.28, voidH, 32, 1, true);
-    const voidMat = new MeshBasicMaterial({ color: 0x000000, fog: false, side: DoubleSide });
-    const voidMesh = new Mesh(voidGeo, voidMat);
-    // Top of the cylinder sits 8 m under the seabed, so it only ever lines the
-    // inside of the shaft and never breaches the floor.
-    voidMesh.position.set(w.x, floor - 8 - voidH * 0.5, w.z);
-    voidMesh.name = 'whirlpool-void';
-    voidMesh.renderOrder = 2;
-    this.group.add(voidMesh);
-    this.disposables.push(voidGeo, voidMat);
-
-    // A wide, faint ring lying on the basin lip. Unlit and fog-exempt, so the
-    // exit is findable from across the cavern the way the Carrier's beacon is.
-    // A RING, not a disc. As a filled circle it covered the shaft's mouth
-    // completely and the exit read as a flat teal puddle painted on the floor —
-    // the hole has to stay visibly open in the middle.
-    const haloGeo = new RingGeometry(w.radius * 0.92, w.radius * 1.55, 48);
-    haloGeo.rotateX(-Math.PI / 2);
-    const haloMat = new MeshBasicMaterial({
-      color: 0x4fd6ee,
-      transparent: true,
-      opacity: 0.55,
-      depthWrite: false,
-      blending: AdditiveBlending,
-      fog: false,
-      side: DoubleSide,
-    });
-    const halo = new Mesh(haloGeo, haloMat);
-    halo.position.set(w.x, floor + 1.5, w.z);
-    halo.name = 'whirlpool-halo';
-    halo.renderOrder = 3;
-    this.group.add(halo);
-    this.disposables.push(haloGeo, haloMat);
-
-    // Cap the very bottom so nothing shows through from outside the map. Set
-    // deep enough that the player never sees it as a floor.
-    const capGeo = new CircleGeometry(w.radius * 0.3, 24);
-    capGeo.rotateX(-Math.PI / 2);
-    const capMat = new MeshBasicMaterial({ color: 0x000000, fog: false });
-    const cap = new Mesh(capGeo, capMat);
-    cap.position.set(w.x, floor - height * 1.15, w.z);
-    cap.name = 'whirlpool-floor';
-    this.group.add(cap);
-    this.disposables.push(capGeo, capMat);
+    // Rock towers crowding ONE side of the hole, so it reads as a found place
+    // with a sheltered approach rather than a circle stamped into the floor.
+    // Uses the zone's own procedural spike form — no imported assets.
+    const rand = mulberry32(7788);
+    const spikeGeo = this.makeSpikeGeometry(57);
+    this.disposables.push(spikeGeo);
+    const TOWERS = 9;
+    const towers = new InstancedMesh(spikeGeo, this.rockMaterial(), TOWERS);
+    towers.name = 'whirlpool-towers';
+    const m = new Matrix4();
+    const q = new Quaternion();
+    const flip = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI);
+    const yaw = new Quaternion();
+    const up = new Vector3(0, 1, 0);
+    const scl = new Vector3();
+    const p = new Vector3();
+    const tint = new Color();
+    let idx = 0;
+    for (let i = 0; i < TOWERS; i++) {
+      // A 150-degree arc on one side only, at varied distance from the lip.
+      const a = -1.3 + (i / (TOWERS - 1)) * 2.6 + (rand() - 0.5) * 0.18;
+      const r = w.radius * (1.25 + rand() * 0.7);
+      const x = w.x + Math.cos(a) * r;
+      const z = w.z + Math.sin(a) * r;
+      const rad = 4 + rand() * rand() * 11;
+      const h = 24 + rand() * 46;
+      scl.set(rad, h, rad);
+      yaw.setFromAxisAngle(up, rand() * Math.PI * 2);
+      q.copy(yaw).multiply(flip); // spike points UP
+      p.set(x, this.terrain.heightAt(x, z) - 3, z);
+      m.compose(p, q, scl);
+      towers.setMatrixAt(idx, m);
+      const v = 0.28 + rand() * 0.3;
+      tint.setRGB(v, v * 1.04, v * 1.12);
+      towers.setColorAt(idx, tint);
+      this.colliders.push({ x, z, r: rad * 0.8, top: this.terrain.heightAt(x, z) + h * 0.85 });
+      idx++;
+    }
+    towers.count = idx;
+    towers.instanceMatrix.needsUpdate = true;
+    if (towers.instanceColor) towers.instanceColor.needsUpdate = true;
+    this.group.add(towers);
   }
 
   // ---- suspended silt -----------------------------------------------------
@@ -972,7 +928,6 @@ export class DrownedGarden implements Zone {
   update(dt: number, camera: PerspectiveCamera, renderer: WebGLRenderer): void {
     this.time += dt;
     this.particleMat.uniforms.uTime.value = this.time;
-    this.whirlMat.uniforms.uTime.value = this.time;
     this.particleMat.uniforms.uCamPos.value.copy(camera.position);
     this.particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
 

@@ -1,4 +1,4 @@
-import clownFishUrl from '../../assets/clown_fish_compressed.glb?url';
+import barracudaUrl from '../../assets/random_fish_4.glb?url';
 import tunaFishUrl from '../../assets/tuna_fish_compressed.glb?url';
 import type { CreatureSpecies } from './creatures';
 import { PLAYER_HP_MULT } from './growth';
@@ -125,11 +125,20 @@ const GENERIC_ATTACK: AttackDef = {
   name: 'Bite', damageMult: 1, reachMult: 1, cooldown: 2.0, lungeSpeed: 20, sweep: false,
 };
 
-/** Starter host. Uses the user-supplied clownfish asset (final art candidate). */
+/**
+ * Starter host. Uses the barracuda asset; this used to be the clownfish, and the
+ * two swapped ecological slots (the clownfish is now the shelf's fast predator).
+ *
+ * ONLY the model and the display name changed. The movement block is the
+ * clownfish starter's, untouched and deliberately so: that handling is the
+ * approved feel for this game, and it belongs to the starter SLOT, not to
+ * whichever fish is wearing it. Retuning it alongside an art swap is what broke
+ * this host once already.
+ */
 export const DARTFISH: SpeciesDef = {
   id: 'dartfish',
-  displayName: 'Clownfish',
-  modelUrl: clownFishUrl,
+  displayName: 'Barracuda',
+  modelUrl: barracudaUrl,
   baseLength: 0.5,
   flipForward: false,
   movement: {
@@ -141,9 +150,13 @@ export const DARTFISH: SpeciesDef = {
     verticalFactor: 0.85,
   },
   camera: {
-    // distanceFactor is now a sqrt(length) coefficient (see PlayerCamera).
-    distanceFactor: 3.0,
-    minDistance: 1.6,
+    // distanceFactor is a sqrt(length) coefficient (see PlayerCamera).
+    // The only intentional change from the clownfish profile: the shoulder sits
+    // closer. 3.0 put the host 2.12 m out, which read as distant; this brings it
+    // to 1.63 m. heightFactor and FOV are left alone so the viewing ANGLE onto
+    // the body is exactly what it was — only the distance moves.
+    distanceFactor: 2.3,
+    minDistance: 1.3,
     heightFactor: 1.5,
     baseFov: 58,
   },
@@ -215,7 +228,7 @@ export const TUNA: SpeciesDef = {
  * Any creature NOT listed here still becomes a plain generic host.
  */
 const ROSTER: Record<string, Partial<SpeciesDef>> = {
-  clownfish: {
+  barracuda: {
     archetype: 'agile',
     attack: { name: 'Nip', damageMult: 0.8, reachMult: 1.0, cooldown: 1.5, lungeSpeed: 20, sweep: false },
     ability: { kind: 'slip', name: 'Slip', cooldown: 6, duration: 0.4, desc: 'Evasive dart out of danger.' },
@@ -237,7 +250,7 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     connectionMult: 1.0,
     identity: 'Heavy ambusher — tanky, with a suction gulp.',
   },
-  barracuda: {
+  clownfish: {
     archetype: 'skirmisher',
     attack: { name: 'Slash', damageMult: 1.5, reachMult: 1.2, cooldown: 1.4, lungeSpeed: 24, sweep: false },
     ability: { kind: 'burst', name: 'Burst', cooldown: 6, duration: 0.7, desc: 'Sprint burst — close or escape, scattering prey.' },

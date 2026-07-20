@@ -90,6 +90,12 @@ export class Ecosystem {
   /** Called when the player's bite kills a creature (for Dominance/score). */
   onPlayerKill: (c: Creature) => void = () => {};
   /**
+   * Called for every creature a bite connects with, before it is known whether
+   * the hit was fatal. Carries the wound position and the victim's size so the
+   * blood layer can place spray and gore at the right scale.
+   */
+  onBloodHit: (at: Vector3, scale: number, died: boolean) => void = () => {};
+  /**
    * The zone's Signal Carrier, if one is standing. The ecosystem owns the link so
    * every attack path (bite, apex sweep, grouper inhale) resolves against it
    * through the one bite function, and so its aura reaches creature AI.
@@ -113,6 +119,7 @@ export class Ecosystem {
 
   private readonly _playerPos = new Vector3();
   private readonly _biteVec = new Vector3();
+  private readonly _wound = new Vector3();
   private readonly _nbr: number[] = [];
   /** Reused participant buffer for the frenzy director (no per-call allocation). */
   private readonly _frenzyBuf: number[] = [];
@@ -555,7 +562,15 @@ export class Ecosystem {
       c.provoke(); // the apex only retaliates against a host that attacks it
       hit++;
       const edible = c.species.role !== 'crab' && c.length <= eatMaxLen;
+      const woundX = c.pos.x;
+      const woundY = c.pos.y;
+      const woundZ = c.pos.z;
       const died = edible ? c.takeDamage(9999) : c.takeDamage(damage);
+      // Crabs are shelled — they chip, they do not spray.
+      if (c.species.role !== 'crab') {
+        this._wound.set(woundX, woundY, woundZ);
+        this.onBloodHit(this._wound, c.length, died);
+      }
       if (edible && died) eaten++;
       else if (died) killed++;
       if (died) this.onPlayerKill(c); // Dominance credit for the defeat

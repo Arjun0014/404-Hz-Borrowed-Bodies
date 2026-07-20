@@ -216,19 +216,21 @@ export class SwimController {
     this.dashOutput = dashing
       ? Math.min(1, this.speed01 / 1.3)
       : Math.max(0, this.speed01 - 0.6) * 0.5;
-    // Face the STEERING direction (camera aim), not raw velocity. The camera
-    // follows the mouse instantly, so facing velocity (which lags via turnRate)
-    // left big low-turn hosts trailing the camera — they drifted sideways across
-    // the view. Facing the aim keeps the body centered under the camera for every
-    // host. Orientation is tracked as yaw/pitch scalars rebuilt from Euler each
-    // frame, so roll (upside-down/slanted) is structurally impossible; banking is
-    // a separate layer on the model root. The species turnRate still flavours how
-    // snappy the turn reads, but a floor keeps even a shark tracking the camera.
-    const faceDir = TMP.copy(AIM).normalize();
+    // Face velocity when moving; face aim when idle. Orientation is tracked
+    // as yaw/pitch scalars and rebuilt from Euler each frame, so roll (and
+    // therefore an upside-down or slanted fish) is structurally impossible.
+    // Banking is a separate visual layer on the model root.
+    //
+    // This is the Phase 0-7 behaviour, restored. Phase 10 (92382b3) replaced it
+    // with `faceDir = AIM` plus `orientRate = max(turnRate * 1.8, 4.0)` to stop
+    // big low-turn hosts trailing the camera. That welded the body to the view
+    // axis at nearly double the turn rate: mouse-look spun the fish in place,
+    // you only ever saw its tail, and swimming stopped reading as swimming.
+    // Following velocity is what makes the body lean into its own turns.
+    const faceDir = speedNow > 0.4 ? TMP.copy(this.vel).normalize() : TMP.copy(AIM);
     const targetYaw = Math.atan2(faceDir.x, faceDir.z);
     const targetPitch = -Math.asin(Math.min(1, Math.max(-1, faceDir.y)));
-    const orientRate = Math.max(mv.turnRate * 1.8, 4.0);
-    const maxStep = orientRate * this.fish.agility * dt;
+    const maxStep = mv.turnRate * this.fish.agility * dt;
     let dYaw = targetYaw - this.curYaw;
     if (dYaw > Math.PI) dYaw -= Math.PI * 2;
     if (dYaw < -Math.PI) dYaw += Math.PI * 2;

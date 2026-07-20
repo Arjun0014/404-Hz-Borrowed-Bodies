@@ -38,6 +38,12 @@ export class SwimController {
   staminaShow = 0;
   /** After a full drain, block sprint until the bar recovers past a threshold. */
   private sprintLockout = false;
+  /**
+   * Smoothed 0..1 sprint intensity. Engages fast, but RELEASES slowly so the
+   * max-speed cap glides back down to cruise instead of snapping the instant you
+   * let off Shift — drives both the speed multiplier and the "rushing water" FX.
+   */
+  private sprintRamp = 0;
 
   /** 0..1 remaining sprint energy (for the energy HUD). */
   get stamina01(): number {
@@ -187,6 +193,7 @@ export class SwimController {
     this.sprinting = false;
     this.staminaShow = 0;
     this.sprintLockout = false;
+    this.sprintRamp = 0;
   }
 
   /**
@@ -206,6 +213,11 @@ export class SwimController {
       this.stamina = Math.min(1, this.stamina + dt * mv.dashRegen);
       if (this.sprintLockout && this.stamina > 0.25) this.sprintLockout = false;
     }
+    // Smoothed intensity: race up when sprinting, drift down slowly when not, so the
+    // speed cap and FX ease back to cruise over ~1 s rather than cutting instantly.
+    const rampRate = sprinting ? 9 : 2.6;
+    this.sprintRamp += (Number(sprinting) - this.sprintRamp) * Math.min(1, rampRate * dt);
+    if (this.sprintRamp < 0.001) this.sprintRamp = 0;
     // HUD reveal: snap up while sprinting, ease away once you stop (bar hides).
     this.staminaShow = sprinting ? 1 : Math.max(0, this.staminaShow - dt * 2.4);
     return sprinting;
@@ -227,8 +239,11 @@ export class SwimController {
 
     // Sprint (Shift) — only while genuinely driving the body; drains the bar.
     const driving = thrust > 0.1 || strafe !== 0 || vertical !== 0;
-    const dashing = this.stepSprint(dt, mv, driving);
-    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
+    this.stepSprint(dt, mv, driving);
+    // The dash multiplier follows the smoothed ramp, not the raw on/off, so the cap
+    // eases back to cruise when you let off rather than snapping the fish to a stop.
+    const sprintMult = 1 + (mv.dashMultiplier - 1) * this.sprintRamp;
+    const maxSpeed = mv.maxSpeed * sprintMult * boost;
 
     this.camera.getAimDir(AIM);
     if (STEERING_SCHEME === 'B') AIM.y = 0;
@@ -243,7 +258,7 @@ export class SwimController {
     const inputActive = DESIRED.lengthSq() > 0.001;
     if (inputActive) {
       DESIRED.normalize();
-      const accel = mv.accel * (dashing ? 1.7 : 1) * boost;
+      const accel = mv.accel * (1 + 0.7 * this.sprintRamp) * boost;
       this.vel.addScaledVector(DESIRED, accel * dt);
     }
 
@@ -287,9 +302,10 @@ export class SwimController {
     // --- orientation ---------------------------------------------------------
     const speedNow = this.vel.length();
     this.speed01 = speedNow / mv.maxSpeed;
-    this.dashOutput = dashing
-      ? Math.min(1, this.speed01 / 1.3)
-      : Math.max(0, this.speed01 - 0.6) * 0.5;
+    // FX intensity follows the smoothed ramp so the "rushing water" streak fades out
+    // with the speed instead of cutting the frame you release Shift.
+    const cruiseFx = Math.max(0, this.speed01 - 0.6) * 0.5;
+    this.dashOutput = Math.max(cruiseFx, Math.min(1, this.speed01 / 1.3) * this.sprintRamp);
     // Face velocity when moving; face aim when idle. Orientation is tracked
     // as yaw/pitch scalars and rebuilt from Euler each frame, so roll (and
     // therefore an upside-down or slanted fish) is structurally impossible.
@@ -405,8 +421,9 @@ export class SwimController {
     // Horizontal movement, camera-relative (aim flattened to the seabed plane).
     const thrust = this.input.axis('KeyW', 'KeyS');
     const strafe = this.input.axis('KeyD', 'KeyA');
-    const dashing = this.stepSprint(dt, mv, thrust > 0.1 || strafe !== 0);
-    const maxSpeed = mv.maxSpeed * (dashing ? mv.dashMultiplier : 1) * boost;
+    this.stepSprint(dt, mv, thrust > 0.1 || strafe !== 0);
+    const sprintMult = 1 + (mv.dashMultiplier - 1) * this.sprintRamp;
+    const maxSpeed = mv.maxSpeed * sprintMult * boost;
     this.camera.getAimDir(AIM);
     AIM.y = 0;
     if (AIM.lengthSq() < 1e-6) AIM.set(Math.sin(this.curYaw), 0, Math.cos(this.curYaw));
@@ -416,7 +433,7 @@ export class SwimController {
     const moving = DESIRED.lengthSq() > 0.001;
     if (moving) {
       DESIRED.normalize();
-      const accel = mv.accel * (dashing ? 1.5 : 1) * boost;
+      const accel = mv.accel * (1 + 0.5 * this.sprintRamp) * boost;
       this.vel.x += DESIRED.x * accel * dt;
       this.vel.z += DESIRED.z * accel * dt;
     }
@@ -463,7 +480,7 @@ export class SwimController {
     // Orientation: upright, facing the walk direction (aim when standing still).
     const speedNow = Math.hypot(this.vel.x, this.vel.z);
     this.speed01 = speedNow / mv.maxSpeed;
-    this.dashOutput = dashing ? Math.min(1, this.speed01 / 1.3) : 0;
+    this.dashOutput = Math.min(1, this.speed01 / 1.3) * this.sprintRamp;
     const faceDir = moving ? TMP.set(this.vel.x, 0, this.vel.z) : TMP.copy(AIM);
     if (faceDir.lengthSq() > 1e-5) {
       faceDir.normalize();

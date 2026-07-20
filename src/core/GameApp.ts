@@ -85,11 +85,14 @@ const LOCK_CONE = 0.3; // target must be within this view-cone of the aim to acq
 // Carriers are big landmarks — lockable (and held) from much further than a fish.
 const CARRIER_LOCK_RANGE = 150;
 
-// Signal Carrier → Connection coupling. Every carrier still ALIVE speeds the
-// entity's grip up — those in the current zone PLUS any you left un-killed in
-// EARLIER zones (they carry forward; future zones never count). Killing one simply
-// removes its share of the pressure, which is why clearing each level matters.
-const CARRIER_PRESSURE = 0.175; // per living carrier, added to the rise multiplier
+// Signal Carrier → Connection coupling. The carriers are the SOLE source of the
+// entity's grip: Connection rises ONLY while at least one relay is still alive —
+// those in the current zone PLUS any you left un-killed in EARLIER zones (they
+// carry forward; future zones never count). Each living relay contributes one
+// "unit" of the base rise, so the pace scales linearly with how many are still
+// broadcasting. Kill every relay in reach and the rise stops dead — that is the
+// whole objective, and why the number frozen when you clear a level is your win.
+const CARRIER_PRESSURE = 1.0; // rise units contributed per living carrier
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -754,17 +757,19 @@ export class GameApp {
   private updateConnection(dt: number, dead: boolean): void {
     if (!this.connection) return;
     if (this.started && !dead) {
-      // Per-host signal cost: a shark draws the entity far faster than a quiet
-      // crab. Every carrier still ALIVE piles on a flat pressure — the ones in this
-      // zone PLUS any left un-killed in earlier zones — so leaving relays standing
-      // is dangerous and stacks level to level. Standing in the nearest one's aura
-      // multiplies it again. Killing a carrier removes its share immediately.
+      // Connection is driven ENTIRELY by the signal carriers. Rise = (living
+      // carriers, this zone PLUS any left un-killed in earlier zones) scaled by the
+      // per-host signal cost and, if you are standing in the nearest relay's aura,
+      // that aura. With zero carriers left in reach the multiplier is 0 and the
+      // rise stops completely — clearing a level banks your progress for good.
       const near = this.nearestCarrier(this.controller.pos);
       const totalCarriers = this.carriedOverCarriers + this.livingCarriers;
       const connMult =
-        this.fish.species.connectionMult *
-        (1 + totalCarriers * CARRIER_PRESSURE) *
-        (near ? near.connectionMultAt(this.controller.pos) : 1);
+        totalCarriers === 0
+          ? 0
+          : this.fish.species.connectionMult *
+            (totalCarriers * CARRIER_PRESSURE) *
+            (near ? near.connectionMultAt(this.controller.pos) : 1);
       this.connection.update(dt, this.fish.length, connMult);
       // Resonance also trickles up over time, paced to the Connection rise, so the
       // means to escape builds alongside the pressure.
@@ -1497,8 +1502,9 @@ export class GameApp {
     this.triggerShake();
     this.ecosystem.alertPrey();
 
-    // Killing the relay removes its share of the Connection pressure straight away
-    // (the rise multiplier reads livingCarriers each frame), on top of the field.
+    // Killing the relay removes its share of the Connection rise straight away
+    // (the multiplier reads livingCarriers each frame); kill the last one in reach
+    // and the rise stops entirely until the next zone's relays wake it up again.
 
     // Drop the dead carrier's collider so its faded corpse leaves no invisible wall.
     const cols = this.zones.current.colliders;

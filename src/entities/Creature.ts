@@ -838,8 +838,12 @@ export class Creature {
       this.pos.y = ground + this.radius;
       if (this.vel.y < 0) this.vel.y *= -0.2;
     }
-    // Surface ceiling.
-    const ceil = ctx.bounds.ceilingY;
+    // Surface ceiling, or the rock roof in an enclosed zone — lower wins, so
+    // fish in the Drowned Garden stay under the vault instead of swimming
+    // through it.
+    const rock = ctx.terrain.ceilingAt?.(this.pos.x, this.pos.z);
+    const ceil =
+      rock === undefined ? ctx.bounds.ceilingY : Math.min(ctx.bounds.ceilingY, rock - this.radius);
     if (this.pos.y > ceil) {
       this.pos.y = ceil;
       if (this.vel.y > 0) this.vel.y = 0;

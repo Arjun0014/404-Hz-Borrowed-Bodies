@@ -528,14 +528,13 @@ export class Ecosystem {
     let biomass = 0; // total body length consumed, for growth
     // The Signal Carrier shares the bite's geometry, so every attack the player
     // has — bite, apex sweep, grouper inhale — damages it without special cases.
-    let carrier: CarrierHitResult | null = null;
-    if (this.carrier?.alive) {
-      const r = this.carrier.tryHit(origin, forward, reach, minDot, damage);
-      if (r.hit) {
-        carrier = r;
-        hit++;
-      }
-    }
+    // NOTE: the Carrier is deliberately NOT tested here. A bite's live window
+    // spans ~25 frames and this function runs on every one of them; creatures
+    // are deduped by `alreadyHit`, but the Carrier had no such guard, so a
+    // single lunge struck it 25 times — 25x the damage, and 25 overlapping
+    // "bite landed" samples, which is the machine-gun rrrr. PlayerCombat now
+    // resolves Carrier hits itself, once per lunge.
+    const carrier: CarrierHitResult | null = null;
     if (!this.terrain) return { hit, eaten, killed, biomass, carrier };
     const ids = this.queryNeighbors(origin.x, origin.z, reach + 3);
     for (let i = 0; i < ids.length; i++) {

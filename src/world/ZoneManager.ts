@@ -1,6 +1,7 @@
 import type { Scene, WebGLRenderer } from 'three';
-import type { TerrainMaps, Zone } from './types';
+import type { Zone, ZoneMaps } from './types';
 import { ShallowVeil } from './ShallowVeil';
+import { DrownedGarden } from './DrownedGarden';
 import { BlockoutZone } from './BlockoutZone';
 
 export interface MemorySnapshot {
@@ -21,13 +22,28 @@ export class ZoneManager {
   constructor(
     private readonly scene: Scene,
     private readonly renderer: WebGLRenderer,
-    private readonly baseMaps: TerrainMaps | undefined,
+    private readonly maps: ZoneMaps,
   ) {}
 
-  /** Build the zone for a given depth index (0 = Shallow Veil). */
+  /**
+   * Build the zone for a given depth index (0 = Shallow Veil, 1 = Drowned
+   * Garden). Each zone is handed the rock set that suits it: sunlit sand for the
+   * shelf, damp lichen-covered stone for the cave.
+   */
   createZone(depth: number, particleScale: number): Zone {
-    const zone: Zone = depth === 0 ? new ShallowVeil(this.scene) : new BlockoutZone(this.scene, depth);
-    zone.build(this.renderer, particleScale, this.baseMaps);
+    let zone: Zone;
+    let rock;
+    if (depth === 0) {
+      zone = new ShallowVeil(this.scene);
+      rock = this.maps.seabed;
+    } else if (depth === 1) {
+      zone = new DrownedGarden(this.scene);
+      rock = this.maps.lichen;
+    } else {
+      zone = new BlockoutZone(this.scene, depth);
+      rock = this.maps.seabed;
+    }
+    zone.build(this.renderer, particleScale, rock);
     return zone;
   }
 

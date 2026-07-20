@@ -289,6 +289,11 @@ export class BlockoutZone implements Zone {
     return null;
   }
 
+  /** No ecosystem, so no flora either. */
+  getFloraArea(): PopulationArea | null {
+    return null;
+  }
+
   /** No ecosystem here, so no Carrier encounter either (it arrives with Phase 15). */
   getCarrierAnchor(_out: Vector3): Vector3 | null {
     return null;

@@ -57,6 +57,8 @@ export class PlayerCombat {
   private readonly lungeHits = new Set<Creature>();
   /** Play the "bite landed" chunk at most once per lunge (no stacking on schools). */
   private landedThisLunge = false;
+  /** The Signal Carrier may only be struck once per lunge (see resolveBite). */
+  private carrierHitThisLunge = false;
 
   constructor(
     private readonly controller: SwimController,
@@ -77,6 +79,7 @@ export class PlayerCombat {
     this.hurtFlash = 0;
     this.feedFlash = 0;
     this.lungeHits.clear();
+    this.carrierHitThisLunge = false;
   }
 
   get health01(): number {
@@ -131,6 +134,7 @@ export class PlayerCombat {
     this.attackActive = ATTACK_WINDOW;
     this.lungeHits.clear();
     this.landedThisLunge = false;
+    this.carrierHitThisLunge = false;
     this.controller.lunge(atk.lungeSpeed);
     this.camera.punch(18);
     this.fish.lungePulse();
@@ -176,11 +180,18 @@ export class PlayerCombat {
       this.feedFlash = 1;
     }
     if (res.biomass > 0) this.onFeed(res.biomass); // eating grows the host
-    if (res.carrier) {
-      // Striking the relay is meaty but yields no meat — the Carrier is an
-      // objective, not food, so it never feeds growth or resonance.
-      this.camera.punch(res.carrier.nodeKilled ? 26 : 12);
-      this.onCarrierHit(res.carrier.nodeKilled, res.carrier.died);
+
+    // The Signal Carrier, resolved here and ONCE per lunge. The bite's live
+    // window is ~25 frames long; letting it connect on each one multiplied both
+    // the damage and the impact sound by 25.
+    const carrier = this.ecosystem.carrier;
+    if (carrier?.alive && !this.carrierHitThisLunge) {
+      const hitRes = carrier.tryHit(ORIGIN, FWD, reach, cone, damage);
+      if (hitRes.hit) {
+        this.carrierHitThisLunge = true;
+        this.camera.punch(hitRes.nodeKilled ? 26 : 12);
+        this.onCarrierHit(hitRes.nodeKilled, hitRes.died);
+      }
     }
   }
 

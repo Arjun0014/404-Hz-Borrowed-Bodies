@@ -1,18 +1,25 @@
-// Encode the seabed PBR source maps (JPG/PNG) to GPU-compressed KTX2 (Basis
-// UASTC + Zstd supercompression, with mipmaps). UASTC is near-lossless, so the
-// runtime gets ~4x smaller VRAM (BC7/ASTC stays compressed on the GPU) with no
-// noticeable quality drop.
+// Encode PBR source maps (JPG/PNG) to GPU-compressed KTX2 (Basis UASTC + Zstd
+// supercompression, with mipmaps). UASTC is near-lossless, so the runtime gets
+// ~4x smaller VRAM (BC7/ASTC stays compressed on the GPU) with no noticeable
+// quality drop.
 //
-// Usage: node scripts/encode-ktx2.mjs
+// Usage: node scripts/encode-ktx2.mjs            (every set below)
+//        node scripts/encode-ktx2.mjs lichen_rock  (one set, by folder name)
 import { encodeToKTX2 } from 'ktx2-encoder';
 import jpeg from 'jpeg-js';
 import { PNG } from 'pngjs';
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SRC_DIR = 'assets/textures/coast_sand_rocks_02_1k/textures';
-const OUT_DIR = 'assets/textures/coast_sand_rocks_02_1k/ktx2';
-mkdirSync(OUT_DIR, { recursive: true });
+/**
+ * Every PBR set the game ships. Each folder holds a `textures/` directory of
+ * sources and gets a sibling `ktx2/` directory of encoded output; the runtime
+ * only ever imports from `ktx2/`.
+ */
+const SETS = [
+  { dir: 'assets/textures/coast_sand_rocks_02_1k', prefix: 'coast_sand_rocks_02' },
+  { dir: 'assets/textures/lichen_rock_1k', prefix: 'lichen_rock' },
+];
 
 // Decode a JPG or PNG file buffer to raw RGBA (top-left first), as the Basis
 // encoder wants for RAW slices.
@@ -41,32 +48,49 @@ const COLOR = { ...base, isPerceptual: true, isSetKTX2SRGBTransferFunc: true };
 const DATA = { ...base, isPerceptual: false, isSetKTX2SRGBTransferFunc: false };
 const NORMAL = { ...DATA, isNormalMap: true };
 
-const jobs = [
-  { in: 'coast_sand_rocks_02_diff_1k.jpg', out: 'coast_sand_rocks_02_diff_1k.ktx2', opts: COLOR },
-  { in: 'coast_sand_rocks_02_nor_gl_1k.png', out: 'coast_sand_rocks_02_nor_gl_1k.ktx2', opts: NORMAL },
-  { in: 'coast_sand_rocks_02_arm_1k.png', out: 'coast_sand_rocks_02_arm_1k.ktx2', opts: DATA },
-  { in: 'coast_sand_rocks_02_disp_1k.png', out: 'coast_sand_rocks_02_disp_1k.ktx2', opts: DATA },
-];
+/** The four maps every set provides, with the right encoder profile for each. */
+function jobsFor(prefix) {
+  return [
+    { in: `${prefix}_diff_1k.jpg`, opts: COLOR },
+    { in: `${prefix}_nor_gl_1k.png`, opts: NORMAL },
+    { in: `${prefix}_arm_1k.png`, opts: DATA },
+    { in: `${prefix}_disp_1k.png`, opts: DATA },
+  ].map((j) => ({ ...j, out: j.in.replace(/\.(jpg|png)$/, '.ktx2') }));
+}
 
 const kb = (n) => (n / 1024).toFixed(0) + ' KB';
+const only = process.argv[2];
 let srcTotal = 0;
 let outTotal = 0;
 
-for (const job of jobs) {
-  const srcPath = join(SRC_DIR, job.in);
-  const outPath = join(OUT_DIR, job.out);
-  const srcBuf = readFileSync(srcPath);
-  const srcSize = statSync(srcPath).size;
-  const t0 = Date.now();
-  const ktx2 = await encodeToKTX2(new Uint8Array(srcBuf), job.opts);
-  writeFileSync(outPath, ktx2);
-  const outSize = ktx2.byteLength;
-  srcTotal += srcSize;
-  outTotal += outSize;
-  console.log(
-    `${job.in.padEnd(34)} ${kb(srcSize).padStart(9)}  ->  ${kb(outSize).padStart(9)}` +
-      `   (${((outSize / srcSize) * 100).toFixed(0)}%, ${Date.now() - t0}ms)`,
-  );
+for (const set of SETS) {
+  if (only && !set.dir.includes(only) && set.prefix !== only) continue;
+  const srcDir = join(set.dir, 'textures');
+  const outDir = join(set.dir, 'ktx2');
+  mkdirSync(outDir, { recursive: true });
+  console.log(`\n== ${set.prefix} ==`);
+
+  for (const job of jobsFor(set.prefix)) {
+    const srcPath = join(srcDir, job.in);
+    let srcBuf;
+    try {
+      srcBuf = readFileSync(srcPath);
+    } catch {
+      console.log(`${job.in.padEnd(34)}   (missing, skipped)`);
+      continue;
+    }
+    const srcSize = statSync(srcPath).size;
+    const t0 = Date.now();
+    const ktx2 = await encodeToKTX2(new Uint8Array(srcBuf), job.opts);
+    writeFileSync(join(outDir, job.out), ktx2);
+    const outSize = ktx2.byteLength;
+    srcTotal += srcSize;
+    outTotal += outSize;
+    console.log(
+      `${job.in.padEnd(34)} ${kb(srcSize).padStart(9)}  ->  ${kb(outSize).padStart(9)}` +
+        `   (${((outSize / srcSize) * 100).toFixed(0)}%, ${Date.now() - t0}ms)`,
+    );
+  }
 }
 
 console.log('-'.repeat(72));

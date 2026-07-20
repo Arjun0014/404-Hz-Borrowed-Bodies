@@ -6,19 +6,23 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
-import type { TerrainMaps } from '../world/types';
-// Seabed PBR set — Poly Haven "coast_sand_rocks_02" (CC0): diffuse, normal (GL),
-// ARM (AO/rough/metal), and displacement, as GPU-compressed KTX2.
+import type { TerrainMaps, ZoneMaps } from '../world/types';
+// Per-zone PBR sets, as GPU-compressed KTX2: diffuse, normal (GL), ARM
+// (AO/rough/metal), displacement. Shallow Veil uses Poly Haven
+// "coast_sand_rocks_02"; the Drowned Garden's cave uses "lichen_rock" (both CC0).
 //
 // The raw JPG/PNG sources are still in assets/ (they are what
 // `node scripts/encode-ktx2.mjs` reads) but are no longer IMPORTED: a static
-// import made Vite bundle all four into the build even though nothing sampled
-// them, shipping ~6.4 MB of dead weight. To A/B against the sources again,
-// re-add the four `?url` imports and the 'image' branch in loadSeabedMaps.
+// import made Vite bundle them into the build even though nothing sampled them,
+// shipping megabytes of dead weight.
 import seabedDiffKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_diff_1k.ktx2?url';
 import seabedNorKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_nor_gl_1k.ktx2?url';
 import seabedArmKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_arm_1k.ktx2?url';
 import seabedDispKtxUrl from '../../assets/textures/coast_sand_rocks_02_1k/ktx2/coast_sand_rocks_02_disp_1k.ktx2?url';
+import lichenDiffKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_diff_1k.ktx2?url';
+import lichenNorKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_nor_gl_1k.ktx2?url';
+import lichenArmKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_arm_1k.ktx2?url';
+import lichenDispKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_disp_1k.ktx2?url';
 import { Loop } from './Loop';
 import { Input } from './Input';
 import { AssetLoader } from './AssetLoader';
@@ -113,6 +117,8 @@ export class GameApp {
   private carrierDownThisZone = false;
   /** Kills made inside the field this run — feeds the anti-farm yield decay. */
   private fieldKills = 0;
+  /** True once the shared reef flora has been disposed (one-way, on descent). */
+  private floraDisposed = false;
   /** The Carrier's solid obstacle, pushed into the zone's collider array. */
   private carrierCollider: CylinderCollider | null = null;
   private readonly sfx = new Sfx();
@@ -181,15 +187,10 @@ export class GameApp {
     });
   }
 
-  /** Load the shared seabed PBR maps (diffuse / normal / ARM / displacement). */
-  private async loadSeabedMaps(): Promise<TerrainMaps> {
+  /** Load one PBR set (diffuse / normal / ARM / displacement) from KTX2. */
+  private async loadMapSet(urls: [string, string, string, string]): Promise<TerrainMaps> {
     const load = (url: string): Promise<Texture> => this.loader.loadKTX2(url);
-    const [map, normalMap, armMap, displacementMap] = await Promise.all([
-      load(seabedDiffKtxUrl),
-      load(seabedNorKtxUrl),
-      load(seabedArmKtxUrl),
-      load(seabedDispKtxUrl),
-    ]);
+    const [map, normalMap, armMap, displacementMap] = await Promise.all(urls.map(load));
     // Diffuse is sRGB colour; normal/ARM/displacement are linear data maps.
     // (KTX2 carries the transfer function in its DFD, but enforce it anyway.)
     map.colorSpace = SRGBColorSpace;
@@ -198,6 +199,18 @@ export class GameApp {
     normalMap.anisotropy = aniso;
     armMap.anisotropy = aniso;
     return { map, normalMap, armMap, displacementMap };
+  }
+
+  /**
+   * Load every zone's rock set up front. They are small (KTX2, ~1.2 MB each) and
+   * shared across zone rebuilds, so paying once at boot beats a hitch mid-descent.
+   */
+  private async loadZoneMaps(): Promise<ZoneMaps> {
+    const [seabed, lichen] = await Promise.all([
+      this.loadMapSet([seabedDiffKtxUrl, seabedNorKtxUrl, seabedArmKtxUrl, seabedDispKtxUrl]),
+      this.loadMapSet([lichenDiffKtxUrl, lichenNorKtxUrl, lichenArmKtxUrl, lichenDispKtxUrl]),
+    ]);
+    return { seabed, lichen };
   }
 
   async start(): Promise<void> {
@@ -209,9 +222,9 @@ export class GameApp {
 
     // Seabed PBR set (Poly Haven coast_sand_rocks_02, CC0). Non-fatal if it
     // fails to load: zones fall back to their vertex-colour palettes.
-    let maps: TerrainMaps | undefined;
+    let maps: ZoneMaps = {};
     try {
-      maps = await this.loadSeabedMaps();
+      maps = await this.loadZoneMaps();
     } catch (err) {
       console.warn('[404hz] seabed textures failed to load, using fallback palette', err);
     }
@@ -244,7 +257,11 @@ export class GameApp {
       zone.colliders,
       zone.getBounds(),
       zone.getSpawn(SPAWN),
+      zone,
     );
+    // The starting zone's modelled dressing, loaded before the title screen
+    // clears so the world is complete the first time it is seen.
+    await zone.dressing?.(this.loader);
 
     this.bubbles = new Bubbles(this.scene);
     this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
@@ -432,7 +449,7 @@ export class GameApp {
     const speed = this.transitioning || dead ? 0 : this.controller.speed01;
     this.playerCamera.update(dt, this.controller.pos, this.controller.vel, speed);
     zone.update(dt, this.playerCamera.camera, this.renderer);
-    this.flora.update(dt);
+    if (!this.floraDisposed) this.flora.update(dt);
     this.sfx.setSwim(dead ? 0 : this.controller.speed01, this.controller.dashOutput > 0.25);
     if (!this.transitioning) {
       this.ecosystem.update(dt, this.controller.pos, this.fish.length, combatActive);
@@ -805,6 +822,8 @@ export class GameApp {
   private carrierPct = -1;
   private carrierNodeText = '';
   private carrierSeen = false;
+  /** Seconds the boss bar stays forced open after a hit, regardless of range. */
+  private carrierEngagedT = 0;
 
   /**
    * Two readouts, deliberately separate: a boss bar once you are close enough to
@@ -825,9 +844,10 @@ export class GameApp {
     }
 
     const dist = this.controller.pos.distanceTo(c.pos);
+    this.carrierEngagedT = Math.max(0, this.carrierEngagedT - 0.016);
 
-    // --- boss bar (close range) ---
-    const engaged = dist < CARRIER_ENGAGE_RANGE;
+    // --- boss bar (close range, or recently struck) ---
+    const engaged = dist < CARRIER_ENGAGE_RANGE || this.carrierEngagedT > 0;
     this.carrierHudEl.classList.toggle('hidden', !engaged);
     if (engaged) {
       if (!this.carrierSeen) {
@@ -1205,9 +1225,17 @@ export class GameApp {
 
   /** Scatter the seabed forest for a zone (none when the zone has no area). */
   private bindFlora(zone: Zone): void {
-    const area = zone.getPopulationArea();
-    if (area) this.flora.bindZone(zone.terrain, area, zone.colliders);
-    else this.flora.unbind();
+    const area = zone.getFloraArea();
+    if (area) {
+      this.flora.bindZone(zone.terrain, area, zone.colliders);
+      return;
+    }
+    // No shared flora in this zone. Descent is one-way, so the reef set can
+    // never be needed again — fully dispose its geometry, materials, and
+    // textures rather than merely unbinding the instances. Keeping the Shallow
+    // Veil's plants resident while playing the Drowned Garden was pure waste.
+    this.flora.dispose();
+    this.floraDisposed = true;
   }
 
   // ---- Signal Carrier + Dead Signal Field (Phases 12–13) -------------------
@@ -1273,6 +1301,11 @@ export class GameApp {
 
   /** A bite connected with the relay — feedback scaled to what it hit. */
   private onCarrierHit(nodeKilled: boolean, died: boolean): void {
+    // Force the boss bar visible and repainted the moment it is struck, however
+    // far away the player is standing: hitting something and seeing no health
+    // move reads as the hit not registering.
+    this.carrierEngagedT = 6;
+    this.carrierPct = -1;
     if (died || nodeKilled) return; // those have their own, louder feedback
     this.sfx.biteLanded(0.7);
   }
@@ -1445,7 +1478,10 @@ export class GameApp {
     next.getSpawn(SPAWN);
     this.bindFlora(next);
     this.playerCamera.bindZone(next.terrain, next.colliders);
-    this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN);
+    this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN, next);
+    // Stream in the zone's modelled dressing. Awaited during the transition
+    // curtain so the player never sees rocks and plants popping into place.
+    await next.dressing?.(this.loader);
     this.bindEcosystem(next);
     this.ecosystem.armSpawnSafe(SPAWN.x, SPAWN.z, 30);
     // A fresh zone gets a fresh objective — one Carrier each, never a second.

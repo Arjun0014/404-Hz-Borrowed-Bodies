@@ -154,7 +154,12 @@ export class PlayerCamera {
       const py = targetPos.y + back.y * t + height;
       const pz = targetPos.z + back.z * t;
       const ground = this.terrain.heightAt(px, pz);
-      let blocked = py < ground + 0.5 || py > WORLD.surfaceY - 0.3;
+      // Overhead limit: a cave zone's rock roof if it has one, otherwise the
+      // ocean surface. Without this the camera would happily push up through
+      // the Drowned Garden's vault and show the player the outside of the map.
+      const rock = this.terrain.ceilingAt?.(px, pz);
+      const overhead = rock === undefined ? WORLD.surfaceY - 0.3 : rock - 0.6;
+      let blocked = py < ground + 0.5 || py > overhead;
       if (!blocked) {
         for (const c of this.colliders) {
           if (py < c.top + 0.3 && Math.hypot(px - c.x, pz - c.z) < c.r + 0.35) {

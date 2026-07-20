@@ -869,6 +869,11 @@ export class ShallowVeil implements Zone {
     return out.set(x, this.terrain.heightAt(x, z), z);
   }
 
+  /** The shelf uses the shared reef-flora set, across its whole population area. */
+  getFloraArea(): PopulationArea {
+    return this.getPopulationArea();
+  }
+
   /** The player is out over the deep once they cross past the descent line. */
   isInDescentZone(pos: Vector3): boolean {
     return pos.x > WORLD.descentX;

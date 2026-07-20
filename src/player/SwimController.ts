@@ -1,6 +1,6 @@
 import { Euler, Vector3 } from 'three';
 import type { Input } from '../core/Input';
-import type { CylinderCollider, TerrainLike, ZoneBounds } from '../world/types';
+import type { CylinderCollider, TerrainLike, Zone, ZoneBounds } from '../world/types';
 import type { PlayerFish } from '../entities/PlayerFish';
 import type { PlayerCamera } from './PlayerCamera';
 import type { MovementDef } from '../data/species';
@@ -12,6 +12,7 @@ const RIGHT = new Vector3();
 const UP = new Vector3(0, 1, 0);
 const LOOK_E = new Euler(0, 0, 0, 'YXZ');
 const TMP = new Vector3();
+const CURRENT = new Vector3();
 
 // Crab (crawl) locomotion.
 const CRAB_GRAVITY = 22; // fall accel (m/s²) once airborne
@@ -39,6 +40,10 @@ export class SwimController {
   private boostMult = 1;
   /** Crab crawl: true while resting on the seabed (can jump). */
   private grounded = false;
+  /** Speed of the ambient current carrying the host right now, m/s. */
+  currentSpeed = 0;
+  /** The zone, for its ambient current. Swapped on descent via bindZone(). */
+  private zone: Zone | null = null;
 
   // Zone-scoped references, swapped on descent via bindZone().
   private terrain: TerrainLike;
@@ -53,10 +58,12 @@ export class SwimController {
     colliders: CylinderCollider[],
     bounds: ZoneBounds,
     spawn: Vector3,
+    zone?: Zone,
   ) {
     this.terrain = terrain;
     this.colliders = colliders;
     this.bounds = bounds;
+    this.zone = zone ?? null;
     this.placeAt(spawn);
   }
 
@@ -109,11 +116,22 @@ export class SwimController {
   }
 
   /** Rebind to a new zone after descent and reposition at its spawn. */
-  bindZone(terrain: TerrainLike, colliders: CylinderCollider[], bounds: ZoneBounds, spawn: Vector3): void {
+  bindZone(
+    terrain: TerrainLike,
+    colliders: CylinderCollider[],
+    bounds: ZoneBounds,
+    spawn: Vector3,
+    zone?: Zone,
+  ): void {
     this.terrain = terrain;
     this.colliders = colliders;
     this.bounds = bounds;
+    this.zone = zone ?? null;
+    this.currentSpeed = 0;
     this.placeAt(spawn);
+    // Arrival shove, if this zone defines one.
+    this.zone?.getSpawnImpulse?.(CURRENT);
+    if (this.zone?.getSpawnImpulse) this.vel.copy(CURRENT);
   }
 
   /** Ability speed surge: multiply max speed for a duration (Burst/Frenzy). */
@@ -166,6 +184,12 @@ export class SwimController {
     const cap = boosting ? Math.max(maxSpeed, speed) : maxSpeed;
     if (speed > cap) this.vel.multiplyScalar(cap / speed);
 
+    // --- ambient current -----------------------------------------------------
+    // Applied to POSITION rather than velocity, so a current cannot be banked
+    // into speed by the drag/clamp above — it carries the host bodily, which is
+    // what a current does, and it stays exactly as strong however fast you swim.
+    this.applyCurrent(dt);
+
     this.pos.addScaledVector(this.vel, dt);
 
     // --- collisions ----------------------------------------------------------
@@ -177,9 +201,11 @@ export class SwimController {
       this.pos.y = ground + radius;
       if (this.vel.y < 0) this.vel.y *= -0.15;
     }
-    // Surface / zone ceiling (blocks backtracking upward in deeper zones).
-    if (this.pos.y > this.bounds.ceilingY) {
-      this.pos.y = this.bounds.ceilingY;
+    // Surface / zone ceiling (blocks backtracking upward in deeper zones), plus
+    // the rock roof in enclosed zones — whichever is lower wins.
+    const roof = this.roofAt(this.pos.x, this.pos.z, radius);
+    if (this.pos.y > roof) {
+      this.pos.y = roof;
       if (this.vel.y > 0) this.vel.y = 0;
     }
     this.collideSolidsAndBounds(radius, dt);
@@ -223,6 +249,25 @@ export class SwimController {
 
     this.fish.object.position.copy(this.pos);
     this.fish.update(dt, Math.min(1, this.speed01));
+  }
+
+  /** Drift the host with the zone's water, if this zone has any. */
+  private applyCurrent(dt: number): void {
+    if (!this.zone?.currentAt) return;
+    this.zone.currentAt(this.pos, CURRENT);
+    this.pos.addScaledVector(CURRENT, dt);
+    // Report the drift so the HUD can tell the player they are being carried.
+    this.currentSpeed = CURRENT.length();
+  }
+
+  /**
+   * Lowest overhead at this spot: the zone's flat cap, or the rock roof in a
+   * cave zone, less the body's radius so the host never clips into stone.
+   */
+  private roofAt(x: number, z: number, radius: number): number {
+    const cap = this.bounds.ceilingY;
+    const rock = this.terrain.ceilingAt?.(x, z);
+    return rock === undefined ? cap : Math.min(cap, rock - radius);
   }
 
   /** Shared solid-obstacle push-out + soft-box boundary clamp (swim + crawl). */
@@ -311,6 +356,9 @@ export class SwimController {
       this.vel.z *= k;
     }
 
+    // A crab on the seabed is dragged by the same water everything else is.
+    this.applyCurrent(dt);
+
     // Jump + gravity.
     const radius = this.fish.length * 0.4;
     const groundNow = this.terrain.heightAt(this.pos.x, this.pos.z) + radius;
@@ -329,8 +377,9 @@ export class SwimController {
       this.pos.y = groundAfter;
       if (this.vel.y < 0) this.vel.y = 0;
     }
-    if (this.pos.y > this.bounds.ceilingY) {
-      this.pos.y = this.bounds.ceilingY;
+    const roof = this.roofAt(this.pos.x, this.pos.z, radius);
+    if (this.pos.y > roof) {
+      this.pos.y = roof;
       if (this.vel.y > 0) this.vel.y = 0;
     }
     this.collideSolidsAndBounds(radius, dt);

@@ -37,8 +37,8 @@ import { Bubbles } from '../entities/Bubbles';
 import { UnderwaterFx } from '../render/UnderwaterFx';
 import { BloodFx } from '../render/BloodFx';
 import { KillCinematic } from '../render/KillCinematic';
-import { DARTFISH } from '../data/species';
-import { EAT_SIZE_RATIO } from '../data/creatures';
+import { DARTFISH, hostProfileFromCreature } from '../data/species';
+import { EAT_SIZE_RATIO, speciesById } from '../data/creatures';
 import { Ecosystem } from '../systems/Ecosystem';
 import { Flora } from '../world/Flora';
 import { PlayerCombat } from '../player/PlayerCombat';
@@ -255,9 +255,22 @@ export class GameApp {
     }
 
     // Run state: resume a saved run if one is mid-descent, else start fresh.
+    // Playtest shortcut: `?depth=N` boots a FRESH run straight into that zone
+    // (0 = Shallow Veil, 1 = Drowned Garden, 2 = Fallen Kingdom), bypassing the
+    // save so test links always land in a clean zone.
+    const params = new URLSearchParams(location.search);
+    const depthParam = params.get('depth');
     const saved = RunState.load();
-    const resuming = !!saved && saved.data.depth > 0;
-    this.runState = resuming ? (saved as RunState) : new RunState();
+    let resuming = !!saved && saved.data.depth > 0;
+    if (depthParam !== null) {
+      const d = Math.max(0, Math.min(9, parseInt(depthParam, 10) || 0));
+      this.runState = new RunState();
+      this.runState.data.depth = d;
+      this.runState.data.stats.descents = d;
+      resuming = false;
+    } else {
+      this.runState = resuming ? (saved as RunState) : new RunState();
+    }
     this.runState.save();
 
     // Build the current zone + player rig.
@@ -396,6 +409,12 @@ export class GameApp {
     // Signal Carriers: the zone's objective. Built last, so their garrisons can
     // be seeded from an already-populated ecosystem.
     await this.buildCarriers(zone);
+
+    // Playtest shortcuts (URL params): `?fish=<speciesId>` starts you in that
+    // body; `?freeze` stops Connection rising so you can explore in peace.
+    const fishParam = params.get('fish') ?? params.get('host');
+    if (fishParam) this.debugBecomeHost(fishParam);
+    if (params.has('freeze')) this.connection.frozen = true;
 
     this.updateZoneTag();
 
@@ -850,6 +869,30 @@ export class GameApp {
   }
   freezeConnection(on = true): void {
     if (this.connection) this.connection.frozen = on;
+  }
+
+  /**
+   * Force the player straight into a creature's body — the `?fish=<id>` playtest
+   * link, and callable live as `__game.debugBecomeHost('shark')`. Mirrors a real
+   * possession's takeover (profile + host instance + growth/camera/health reseat)
+   * but skips the channel, warp, and Resonance cost. `grow` (0..1) sets the size.
+   */
+  debugBecomeHost(speciesId: string, grow = 0.7): void {
+    let sp;
+    try {
+      sp = speciesById(speciesId);
+    } catch {
+      console.warn(`[404hz] debugBecomeHost: unknown species "${speciesId}"`);
+      return;
+    }
+    const profile = hostProfileFromCreature(sp);
+    const inst = this.ecosystem.createHostInstance(sp.id);
+    this.fish.swapHost(profile, inst);
+    this.growth.setHost(Math.max(0, Math.min(1, grow))); // size + camera + max HP
+    this.combat.dead = false;
+    this.combat.health = this.combat.maxHealth;
+    this.runState.data.hostSpeciesId = sp.id;
+    this.onPossessed(profile.displayName, sp.id);
   }
 
   // ---- onboarding (Phase 14: teach through play, not a tutorial) ----------

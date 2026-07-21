@@ -142,6 +142,17 @@ export interface Zone {
    */
   getSpawnImpulse?(out: Vector3): Vector3;
 
+  /**
+   * Optional non-box containment, applied by the swim controller AFTER its own
+   * box-bounds clamp. The heightfield floor/roof model cannot express a tall
+   * VERTICAL wall (it is single-valued in Y), so a zone shaped as an upright
+   * cylinder — the Fallen Kingdom's open-topped well — implements this to push
+   * the host radially back inside its wall at every height. `radius` is the
+   * host's collision radius so the wall is fitted to the body. Mutates `pos`/`vel`
+   * in place. Zones with ordinary rectangular bounds omit it.
+   */
+  containAt?(pos: Vector3, vel: Vector3, radius: number, dt: number): void;
+
   /** True while the player is out in the deep / descent region. */
   isInDescentZone(pos: Vector3): boolean;
   /**

@@ -2,6 +2,7 @@ import type { Scene, WebGLRenderer } from 'three';
 import type { Zone, ZoneMaps } from './types';
 import { ShallowVeil } from './ShallowVeil';
 import { DrownedGarden } from './DrownedGarden';
+import { FallenKingdom } from './FallenKingdom';
 import { BlockoutZone } from './BlockoutZone';
 
 export interface MemorySnapshot {
@@ -38,6 +39,11 @@ export class ZoneManager {
       rock = this.maps.seabed;
     } else if (depth === 1) {
       zone = new DrownedGarden(this.scene);
+      rock = this.maps.lichen;
+    } else if (depth === 2) {
+      // The Fallen Kingdom: a drowned cathedral-well of stone and crystal. Damp
+      // lichen stone suits its ancient walls, same set the cave uses.
+      zone = new FallenKingdom(this.scene);
       rock = this.maps.lichen;
     } else {
       zone = new BlockoutZone(this.scene, depth);

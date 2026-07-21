@@ -276,3 +276,27 @@ export const DROWNED_GARDEN_POP: PopEntry[] = [
   { speciesId: 'crab', count: 10 },
   { speciesId: 'megalodon', count: 1 },
 ];
+
+/**
+ * Populates the Fallen Kingdom — the drowned crystal well beneath the Garden.
+ * A vertical shaft reads best with fauna spread through its whole height, so this
+ * leans on cheap schooling species for volume and keeps the heavy hunters rare.
+ * Reuses the already-wired roster (bespoke abyssal fauna — the eye monster,
+ * anglerfish, koi — are a later pass); one megalodon prowls the depths as the
+ * apex, on top of the two Signal Carriers that are the level's real objective.
+ */
+export const FALLEN_KINGDOM_POP: PopEntry[] = [
+  { speciesId: 'fireflysquid', count: 60, schoolSize: 14 }, // glow motes threading the shaft
+  { speciesId: 'fry', count: 54, schoolSize: 15 },
+  { speciesId: 'angelfish', count: 34, schoolSize: 10 },
+  { speciesId: 'barracuda', count: 30, schoolSize: 10 },
+  { speciesId: 'silverside', count: 30 },
+  { speciesId: 'anchovy', count: 24 },
+  { speciesId: 'wrasse', count: 12 },
+  { speciesId: 'angel', count: 10 },
+  { speciesId: 'manta', count: 6 },
+  { speciesId: 'grouper', count: 6 },
+  { speciesId: 'magnapinna', count: 5 },
+  { speciesId: 'clownfish', count: 5 },
+  { speciesId: 'megalodon', count: 1 },
+];

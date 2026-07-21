@@ -298,6 +298,9 @@ export class SwimController {
       if (this.vel.y > 0) this.vel.y = 0;
     }
     this.collideSolidsAndBounds(radius, dt);
+    // Zone-specific containment (e.g. the Fallen Kingdom's cylindrical wall),
+    // applied after the box clamp so a round zone can hold the host at any height.
+    this.zone?.containAt?.(this.pos, this.vel, radius, dt);
 
     // --- orientation ---------------------------------------------------------
     const speedNow = this.vel.length();
@@ -479,6 +482,7 @@ export class SwimController {
       if (this.vel.y > 0) this.vel.y = 0;
     }
     this.collideSolidsAndBounds(radius, dt);
+    this.zone?.containAt?.(this.pos, this.vel, radius, dt);
 
     // Orientation: upright, facing the walk direction (aim when standing still).
     const speedNow = Math.hypot(this.vel.x, this.vel.z);

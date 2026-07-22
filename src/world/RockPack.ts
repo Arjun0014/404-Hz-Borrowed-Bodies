@@ -40,6 +40,14 @@ export interface RockPiece {
   material: Material;
   /** Height above its base at unit scale — lets callers reason about clearance. */
   unitHeight: number;
+  /**
+   * Footprint at unit scale. Exactly one of these is 1 (the axis that was
+   * normalised); the other tells you the piece's plan aspect, which is how a
+   * caller works out whether a long part — a beam, a lintel — runs along X or Z
+   * before rotating it into place.
+   */
+  unitWidth: number;
+  unitDepth: number;
   /** Triangle count, for budgeting. */
   tris: number;
 }
@@ -94,6 +102,8 @@ export class RockPack {
         geometry: geo,
         material: (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as Material,
         unitHeight: size.y * scale,
+        unitWidth: size.x * scale,
+        unitDepth: size.z * scale,
         tris,
       };
       pack.pieces.push(piece);

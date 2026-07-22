@@ -1,8 +1,8 @@
 import {
   AdditiveBlending,
-  BackSide,
   BufferAttribute,
   BufferGeometry,
+  CircleGeometry,
   Color,
   CylinderGeometry,
   DirectionalLight,
@@ -11,9 +11,9 @@ import {
   Group,
   HemisphereLight,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
-  PointLight,
   Points,
   RepeatWrapping,
   type Scene,
@@ -22,7 +22,7 @@ import {
   Vector3,
   type WebGLRenderer,
 } from 'three';
-import { SHAFT, ShaftTerrain } from './ShaftTerrain';
+import { KINGDOM, KingdomTerrain } from './KingdomTerrain';
 import { KingdomDressing } from './KingdomDressing';
 import type {
   AssetLoaderLike,
@@ -46,50 +46,38 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function hash2(ix: number, iz: number): number {
-  let h = (ix * 374761393 + iz * 668265263) | 0;
-  h = (h ^ (h >> 13)) | 0;
-  h = Math.imul(h, 1274126177);
-  return ((h ^ (h >> 16)) >>> 0) / 4294967295;
-}
-function noise2(x: number, y: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const fx = x - ix;
-  const fy = y - iy;
-  const sx = fx * fx * (3 - 2 * fx);
-  const sy = fy * fy * (3 - 2 * fy);
-  const a = hash2(ix, iy);
-  const b = hash2(ix + 1, iy);
-  const c = hash2(ix, iy + 1);
-  const d = hash2(ix + 1, iy + 1);
-  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
-}
 function smoothstep(e0: number, e1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 }
 
 /**
- * The Fallen Kingdom — a drowned cathedral-well.
+ * The Fallen Kingdom — a drowned city under a collapsed cavern roof.
  *
- * A wide, upright stone cylinder open at the top (a shaft of pale light pours in
- * where you drop through) and at the bottom (the black throat you descend on).
- * Where the Garden was a horizontal cavern, this zone is VERTICAL: its whole
- * character is height, so the space is read by falling through it past four
- * colossal columns that hold the walls apart, ledges of ruined architecture, and
- * — the point of the place — crystal. Gems grow everywhere in flowering bursts,
- * self-lit, the only real colour in the gloom, so the descent feels like sinking
- * into a geode.
+ * You arrive by falling through the BREACH: the hole where the vault gave way
+ * directly above the citadel, 250 m over the acropolis. A single shaft of pale
+ * light comes down it and lands on the throne, and everything else is lit by the
+ * crystal that has eaten the place. Sinking down that shaft, past the rim, and
+ * watching a whole city resolve out of the dark below you is the entire point of
+ * the zone's first thirty seconds.
  *
- * Shape and radial containment live in {@link ShaftTerrain}; the modelled content
- * (columns, ruins, crystals) in {@link KingdomDressing}. This class owns the wall
- * shell, the light, the atmosphere, and the lifecycle.
+ * Shape and ground plan live in {@link KingdomTerrain}; the city itself in
+ * {@link KingdomDressing}. This class owns atmosphere, lighting, and lifecycle.
+ *
+ * Lighting is what this zone gets wrong most easily, so the reasoning is
+ * recorded here. A city is made of VERTICAL surfaces, and light coming straight
+ * down the breach barely grazes any of them — a top-down key alone renders the
+ * whole town as black silhouettes standing on a lit floor, which is exactly how
+ * the previous version of this zone failed. So the rig is four parts: a strong
+ * downward key for the citadel, two nearly-horizontal rakes from opposite
+ * quarters so every wall face catches something, a bright hemisphere for base
+ * readability at range, and emissive on the stone itself. No point lights — they
+ * fall off as 1/d² and this map is 760 m across, so they contribute nothing.
  */
 export class FallenKingdom implements Zone {
   readonly displayName = 'The Fallen Kingdom';
   readonly group = new Group();
-  readonly terrain = new ShaftTerrain();
+  readonly terrain = new KingdomTerrain();
   readonly colliders: CylinderCollider[] = [];
   particleCount = 0;
 
@@ -97,56 +85,72 @@ export class FallenKingdom implements Zone {
   private time = 0;
   private fog!: FogExp2;
   private hemi!: HemisphereLight;
-  private topLight!: DirectionalLight;
-  private coreLight!: PointLight;
-  private shaftMat!: ShaderMaterial;
+  private shaftLight!: DirectionalLight;
+  private rakeA!: DirectionalLight;
+  private rakeB!: DirectionalLight;
+  private glowFill!: DirectionalLight;
+  private beam!: Mesh;
+  private beamMat!: ShaderMaterial;
   private particleMat!: ShaderMaterial;
   private particles!: Points;
-  private wallTexture: Texture | null = null;
-  private dressing_: KingdomDressing | null = null;
+  private masonryTexture: Texture | null = null;
+  private city: KingdomDressing | null = null;
   private readonly disposables: { dispose(): void }[] = [];
 
   constructor(scene: Scene) {
     this.scene = scene;
   }
 
-  build(_renderer: WebGLRenderer, particleScale: number, maps?: TerrainMaps): void {
-    // Deep indigo water, a touch of violet — the colour the crystals throw back.
-    // Fog is kept THIN: the well is 440 m across and the far wall has to read, or
-    // the whole zone collapses to crystals floating in black.
-    this.fog = new FogExp2(0x0b0e22, 0.0032);
+  build(
+    _renderer: WebGLRenderer,
+    particleScale: number,
+    maps?: TerrainMaps,
+    trimMaps?: TerrainMaps,
+  ): void {
+    // Deep cold water with a mineral cast. Density is deliberately LIGHTER than
+    // the Drowned Garden's: that zone is about not seeing what is around you,
+    // this one is about reading a city plan across 600 m. It still closes in as
+    // you drop into the geode (see update).
+    this.fog = new FogExp2(0x071019, 0.0034);
     this.scene.fog = this.fog;
-    this.scene.background = new Color(0x080816);
+    this.scene.background = new Color(0x04080e);
 
-    // Ambient. The ground colour is deliberately NOT black: a hemisphere light
-    // shades a vertical surface with the sky/ground blend, so a black ground
-    // leaves the tall walls unlit. Lifting both, and the intensity, is what makes
-    // the far stone read across a 440 m well.
-    this.hemi = new HemisphereLight(0xb4c6ff, 0x3a3260, 4.6);
+    // Base readability. A hemisphere is the only light that reaches the far side
+    // of a 760 m map for free, so it carries the load; its sky term is the
+    // breach and the crystal, its ground term is silt.
+    // Sky term is the breach and the crystal; ground term is warm silt rather
+    // than black. A cold sky over a cold ground made every surface in the zone
+    // the same blue and the city read as one flat teal mass — the warm bounce is
+    // what separates a lit face from a shadowed one at distance.
+    this.hemi = new HemisphereLight(0x6f9dc4, 0x241d16, 2.7);
     this.group.add(this.hemi);
 
-    // The shaft of light from the open top: a strong, pale key raking straight
-    // down the centre of the well — lights the floor and the horizontal ledges,
-    // and makes arriving read as dropping into somewhere sacred, lit from a sky
-    // you can no longer reach.
-    this.topLight = new DirectionalLight(0xdce8ff, 5.0);
-    this.topLight.position.set(0, SHAFT.wallTop + 160, 0);
-    this.topLight.target.position.set(0, SHAFT.floorY, 0);
-    this.group.add(this.topLight, this.topLight.target);
+    // The key: light pouring down the breach. Aimed slightly off vertical so the
+    // citadel's columns throw their length across the plateau instead of pooling
+    // straight down at their own feet.
+    this.shaftLight = new DirectionalLight(0xbfe6ff, 5.4);
+    this.shaftLight.position.set(KINGDOM.breach.x + 60, 700, KINGDOM.breach.z - 90);
+    this.shaftLight.target.position.set(0, KINGDOM.acropolis.height, 0);
+    this.group.add(this.shaftLight, this.shaftLight.target);
 
-    // Point lights strung down the central axis. A top-down key barely touches a
-    // vertical wall, so these radial sources are what actually reveal the walls,
-    // the four columns, and the ruins at every height — cool where the light
-    // enters up top, warming into crystal-violet as you sink.
-    this.coreLight = new PointLight(0xbcd6ff, 900, 700, 1.3);
-    this.coreLight.position.set(0, SHAFT.wallTop - 20, 0);
-    this.group.add(this.coreLight);
-    const midLight = new PointLight(0x9a7cff, 650, 560, 1.5);
-    midLight.position.set(0, SHAFT.wallTop * 0.5, 0);
-    this.group.add(midLight);
-    const lowLight = new PointLight(0x7f9cff, 480, 460, 1.6);
-    lowLight.position.set(0, SHAFT.floorY + 80, 0);
-    this.group.add(lowLight);
+    // The two rakes: nearly horizontal, from opposite quarters, cool on one side
+    // and warm on the other. This is what gives every wall in the town a lit
+    // face and a shadowed face, and therefore what makes the city read as solid.
+    this.rakeA = new DirectionalLight(0x9ccbe2, 2.0);
+    this.rakeA.position.set(-600, 150, -320);
+    this.rakeA.target.position.set(0, 40, 0);
+    this.group.add(this.rakeA, this.rakeA.target);
+
+    this.rakeB = new DirectionalLight(0xffb070, 2.1);
+    this.rakeB.position.set(560, 120, 420);
+    this.rakeB.target.position.set(0, 40, 0);
+    this.group.add(this.rakeB, this.rakeB.target);
+
+    // A cold up-light out of the geode, as though the crystal down there burns.
+    this.glowFill = new DirectionalLight(0x4fd8e8, 1.1);
+    this.glowFill.position.set(KINGDOM.geode.x, -120, KINGDOM.geode.z);
+    this.glowFill.target.position.set(KINGDOM.geode.x * 0.3, 90, KINGDOM.geode.z * 0.3);
+    this.group.add(this.glowFill, this.glowFill.target);
 
     if (maps) {
       const tile = (src: Texture, n: number, m = n): Texture => {
@@ -157,132 +161,65 @@ export class FallenKingdom implements Zone {
         this.disposables.push(t);
         return t;
       };
-      this.wallTexture = tile(maps.map, 10, 22); // many courses up the tall wall
-      const { floor } = this.terrain.build(maps);
-      this.group.add(floor);
+      const shell: TerrainMaps = { map: tile(maps.map, 80), normalMap: tile(maps.normalMap, 80) };
+      if (maps.armMap) shell.armMap = tile(maps.armMap, 80);
+      // Masonry tiles far tighter than terrain. A course of stone is ~1.7 m and
+      // the pieces are a few metres across, so the slate has to repeat at
+      // roughly that rate or a wall reads as one smeared sheet of rock instead
+      // of as laid blocks.
+      this.masonryTexture = tile((trimMaps ?? maps).map, 3, 3);
+      const { floor, roof } = this.terrain.build(shell);
+      this.group.add(floor, roof);
     } else {
-      const { floor } = this.terrain.build();
-      this.group.add(floor);
+      const { floor, roof } = this.terrain.build();
+      this.group.add(floor, roof);
     }
 
-    this.buildWall(maps);
-    this.buildLightShaft();
+    this.buildBeam();
+    this.buildExitThroat();
     this.buildParticles(particleScale);
 
     this.scene.add(this.group);
   }
 
-  /** Second phase: the modelled kingdom — columns, ruins, crystal. */
   async dressing(loader: AssetLoaderLike): Promise<void> {
-    this.dressing_ = new KingdomDressing(this.group, this.terrain);
-    await this.dressing_.build(loader);
-    for (const c of this.dressing_.colliders) this.colliders.push(c);
+    this.city = new KingdomDressing(this.group, this.terrain, this.masonryTexture);
+    await this.city.build(loader);
+    for (const c of this.city.colliders) this.colliders.push(c);
     console.log(
-      `[404hz] fallen kingdom dressing: +${this.dressing_.drawCalls} draw calls, ` +
-        `+${(this.dressing_.tris / 1000).toFixed(0)}k tris`,
+      `[404hz] fallen kingdom dressing: +${this.city.drawCalls} draw calls, ` +
+        `+${(this.city.tris / 1000).toFixed(0)}k tris`,
     );
   }
 
-  // ---- the cylinder wall --------------------------------------------------
+  // ---- the shaft of light ---------------------------------------------------
 
   /**
-   * The well's wall: a tall open-ended cylinder seen from the inside. Displaced
-   * with value noise so it reads as ancient hewn stone rather than a machined
-   * tube, and vertex-shaded in horizontal courses that darken into the depths and
-   * warm toward the light above.
+   * The god-ray coming down the breach: one open-ended cone, additive, no depth
+   * write.
    *
-   * Displacement is biased OUTWARD (it only rarely pushes in, and never by more
-   * than a body's width) so the visible rock never crosses the radial containment
-   * line the host is stopped at — you press against the wall, you don't clip it.
+   * Alpha is keyed on |dot(normal, view)| rather than on the usual rim term, and
+   * that inversion is the whole trick. On a hollow cone the eye looks through
+   * the MOST water where the surface faces it head-on and through the least at
+   * the silhouette, so |N·V| stands in for path length through the volume. The
+   * result is a soft-edged column of light instead of a lit tube with a hard
+   * outline — which is what gave the last attempt's beam its decal look.
    */
-  private buildWall(maps?: TerrainMaps): void {
-    const R = SHAFT.radius;
-    const bottom = SHAFT.floorY - 24;
-    const top = SHAFT.wallTop;
-    const height = top - bottom;
-    const radialSegs = 128;
-    const heightSegs = 64;
-    const geo = new CylinderGeometry(R, R, height, radialSegs, heightSegs, true);
-    geo.translate(0, bottom + height / 2, 0);
+  private buildBeam(): void {
+    const topY = KINGDOM.sky + 40;
+    const botY = KINGDOM.acropolis.height - 34; // ends inside the mesa: no visible cap
+    const h = topY - botY;
+    const geo = new CylinderGeometry(
+      KINGDOM.breach.r * 0.86,
+      KINGDOM.breach.r * 0.72,
+      h,
+      40,
+      1,
+      true,
+    );
+    geo.translate(KINGDOM.breach.x, botY + h / 2, KINGDOM.breach.z);
 
-    const pos = geo.attributes.position as BufferAttribute;
-    const colors = new Float32Array(pos.count * 3);
-    const textured = !!maps;
-    const light = textured ? new Color(0.95, 0.98, 1.12) : new Color(0x4c5570);
-    const dark = textured ? new Color(0.46, 0.49, 0.6) : new Color(0x1a1d2b);
-    const violet = textured ? new Color(0.54, 0.42, 0.76) : new Color(0x241b38);
-    const deep = textured ? new Color(0.1, 0.11, 0.18) : new Color(0x05060c);
-    const tmp = new Color();
-    const tmp2 = new Color();
-
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const y = pos.getY(i);
-      const z = pos.getZ(i);
-      const ang = Math.atan2(z, x);
-      // Craggy relief: layered noise around the ring and up the wall.
-      const u = (ang / Math.PI) * 12;
-      const v = y * 0.03;
-      const n =
-        noise2(u, v) * 0.6 + noise2(u * 2.3 + 11, v * 2.1 + 5) * 0.3 + noise2(u * 5 + 3, v * 4 + 9) * 0.1;
-      // Biased outward: range about -2.5 .. +7.5 m.
-      const disp = (n - 0.25) * 10;
-      const inv = (R + disp) / R;
-      pos.setX(i, x * inv);
-      pos.setZ(i, z * inv);
-
-      // Horizontal courses (built stone), plus the outward relief catching light.
-      const course = 0.5 + 0.5 * Math.sin(y * 0.16 + noise2(u * 0.5, v) * 2.0);
-      tmp.copy(dark).lerp(light, smoothstep(0.2, 0.9, course) * (0.5 + n * 0.6));
-      const vt = smoothstep(0.62, 0.9, noise2(u * 0.7 + 20, v * 0.6 + 4));
-      tmp.lerp(tmp2.copy(violet), vt * 0.5);
-      // Height gradient: bright and cool at the top where light enters, darker
-      // (but never black — the walls must still read) toward the depths.
-      const hT = smoothstep(bottom, top, y);
-      tmp.multiplyScalar(0.58 + hT * 0.55);
-      tmp.lerp(tmp2.copy(deep), (1 - hT) * (1 - hT) * 0.4);
-      colors[i * 3] = tmp.r;
-      colors[i * 3 + 1] = tmp.g;
-      colors[i * 3 + 2] = tmp.b;
-    }
-    geo.setAttribute('color', new BufferAttribute(colors, 3));
-    geo.computeVertexNormals();
-
-    const mat = new MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.95,
-      metalness: 0,
-      side: BackSide, // seen from inside the tube
-      map: this.wallTexture ?? undefined,
-      // A faint self-glow so the far wall never falls to pure black — reads as
-      // ancient stone soaked in the crystal light, independent of distance/fog.
-      emissive: new Color(0x1c2444),
-      emissiveIntensity: 0.9,
-    });
-    this.disposables.push(geo, mat);
-    const mesh = new Mesh(geo, mat);
-    mesh.name = 'shaft-wall';
-    this.group.add(mesh);
-  }
-
-  // ---- the shaft of light -------------------------------------------------
-
-  /**
-   * A soft volumetric column of light down the centre of the well — the god-ray
-   * from the open top. A cylinder rendered additively with a shader that fades to
-   * nothing at its edge and toward the floor, and drifts slowly, so it reads as
-   * hanging light in dusty water rather than a solid object. Deliberately faint;
-   * the real brightness is the directional key and the emissive crystal.
-   */
-  private buildLightShaft(): void {
-    const R = SHAFT.radius * 0.5;
-    const bottom = SHAFT.floorY + 20;
-    const top = SHAFT.wallTop + 40;
-    const height = top - bottom;
-    const geo = new CylinderGeometry(R * 0.7, R, height, 40, 1, true);
-    geo.translate(0, bottom + height / 2, 0);
-
-    this.shaftMat = new ShaderMaterial({
+    this.beamMat = new ShaderMaterial({
       transparent: true,
       depthWrite: false,
       blending: AdditiveBlending,
@@ -290,55 +227,113 @@ export class FallenKingdom implements Zone {
       fog: false,
       uniforms: {
         uTime: { value: 0 },
-        uBottom: { value: bottom },
-        uTop: { value: top },
-        uColor: { value: new Color(0x8fb4ff) },
+        uTop: { value: topY },
+        uBot: { value: botY },
+        uIntensity: { value: 1 },
+        uCentre: { value: new Vector3(KINGDOM.breach.x, 0, KINGDOM.breach.z) },
       },
       vertexShader: /* glsl */ `
         varying vec3 vWorld;
-        varying vec2 vUv;
+        varying vec3 vNrm;
         void main() {
-          vUv = uv;
-          vec4 w = modelMatrix * vec4(position, 1.0);
-          vWorld = w.xyz;
-          gl_Position = projectionMatrix * viewMatrix * w;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorld = wp.xyz;
+          vNrm = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * viewMatrix * wp;
         }
       `,
       fragmentShader: /* glsl */ `
         uniform float uTime;
-        uniform float uBottom;
         uniform float uTop;
-        uniform vec3 uColor;
+        uniform float uBot;
+        uniform float uIntensity;
+        uniform vec3 uCentre;
         varying vec3 vWorld;
-        varying vec2 vUv;
+        varying vec3 vNrm;
+
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+                     mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+        }
+
         void main() {
-          // Fade in from the sides (edges of the tube face the camera thinnest).
-          float edge = sin(vUv.x * 3.14159);
-          // Brightest near the top where the light enters, fading down the well.
-          float h = clamp((vWorld.y - uBottom) / (uTop - uBottom), 0.0, 1.0);
-          float vert = pow(h, 1.6);
-          float shimmer = 0.85 + 0.15 * sin(vWorld.y * 0.05 + uTime * 0.6);
-          float a = edge * edge * vert * shimmer * 0.16;
-          gl_FragColor = vec4(uColor, a);
+          vec3 V = normalize(cameraPosition - vWorld);
+          // Path length through the volume. Raised to a power so the falloff
+          // toward the silhouette is steep: at a linear falloff the cone keeps a
+          // visible hard rim and reads as a frosted glass tube rather than as
+          // light, which is exactly how the first pass looked.
+          float facing = abs(dot(normalize(vNrm), V));
+          float thickness = pow(smoothstep(0.0, 0.92, facing), 2.2);
+
+          float t = clamp((vWorld.y - uBot) / (uTop - uBot), 0.0, 1.0);
+          // Absorbed away as it sinks, and eased out at BOTH ends so neither the
+          // rim nor the far top of the shaft shows a cut edge.
+          float depthFade = pow(1.0 - t, 0.7) * smoothstep(0.0, 0.14, t) * smoothstep(1.0, 0.62, t);
+
+          // Slow vertical striations, so the shaft moves like real water.
+          float a = atan(vWorld.z - uCentre.z, vWorld.x - uCentre.x);
+          float striate = 0.6 + 0.4 * vnoise(vec2(a * 2.4, vWorld.y * 0.012 - uTime * 0.05));
+
+          float alpha = thickness * depthFade * striate * 0.24 * uIntensity;
+          vec3 col = mix(vec3(0.42, 0.68, 0.95), vec3(0.78, 0.9, 1.0), depthFade);
+          gl_FragColor = vec4(col, alpha);
         }
       `,
     });
-    const mesh = new Mesh(geo, this.shaftMat);
-    mesh.name = 'light-shaft';
-    mesh.frustumCulled = false;
-    this.group.add(mesh);
-    this.disposables.push(geo, this.shaftMat);
+    this.beam = new Mesh(geo, this.beamMat);
+    this.beam.name = 'breach-beam';
+    this.beam.renderOrder = 4;
+    this.group.add(this.beam);
+    this.disposables.push(geo, this.beamMat);
   }
 
-  // ---- suspended motes ----------------------------------------------------
+  // ---- the way down ---------------------------------------------------------
+
+  /** A dark throat at the bottom of the geode. */
+  private buildExitThroat(): void {
+    const e = KINGDOM.exit;
+    const floor = this.terrain.heightAt(e.x, e.z);
+
+    const poolGeo = new CircleGeometry(e.radius, 40);
+    poolGeo.rotateX(-Math.PI / 2);
+    const poolMat = new MeshBasicMaterial({ color: 0x02090f, fog: false });
+    const pool = new Mesh(poolGeo, poolMat);
+    pool.position.set(e.x, floor - 1.5, e.z);
+    pool.name = 'kingdom-exit';
+    this.group.add(pool);
+    this.disposables.push(poolGeo, poolMat);
+
+    const wallGeo = new CylinderGeometry(e.radius, e.radius * 0.84, 30, 40, 1, true);
+    const wallMat = new MeshStandardMaterial({
+      color: 0x16222b,
+      roughness: 1,
+      metalness: 0,
+      side: DoubleSide,
+      map: this.masonryTexture ?? undefined,
+      emissive: new Color(0x0a1a24),
+    });
+    const wall = new Mesh(wallGeo, wallMat);
+    wall.position.set(e.x, floor - 16, e.z);
+    wall.name = 'kingdom-exit-shaft';
+    this.group.add(wall);
+    this.disposables.push(wallGeo, wallMat);
+  }
+
+  // ---- suspended motes ------------------------------------------------------
 
   private buildParticles(scale: number): void {
     const count = Math.floor(3600 * scale);
     this.particleCount = count;
-    const box = 44;
+    const box = 46;
     const positions = new Float32Array(count * 3);
     const seeds = new Float32Array(count);
-    const rand = mulberry32(4242);
+    const rand = mulberry32(9071);
     for (let i = 0; i < count; i++) {
       positions[i * 3] = (rand() - 0.5) * box;
       positions[i * 3 + 1] = (rand() - 0.5) * box;
@@ -367,27 +362,34 @@ export class FallenKingdom implements Zone {
         uniform float uBox;
         uniform float uPixelRatio;
         varying float vAlpha;
+        varying float vTint;
         void main() {
           vec3 p = position;
-          // Motes drift gently UPWARD — dust rising into the light from the top.
-          p.x += sin(uTime * 0.14 + aSeed * 1.7) * 1.4;
-          p.y += mod(uTime * 0.5 + aSeed * 3.1, uBox);
-          p.z += cos(uTime * 0.13 + aSeed * 1.1) * 1.4;
+          // Motes RISE here (the drowned city is outgassing), against the
+          // Garden's silt that sinks. A small thing, but it makes the two zones
+          // feel like different water.
+          p.x += sin(uTime * 0.13 + aSeed * 1.9) * 1.6;
+          p.y += sin(uTime * 0.1 + aSeed * 2.1) * 1.1 + uTime * 0.5;
+          p.z += cos(uTime * 0.12 + aSeed * 1.3) * 1.6;
           vec3 rel = mod(p - uCamPos + uBox * 0.5, uBox) - uBox * 0.5;
           vec3 world = uCamPos + rel;
           vec4 mv = viewMatrix * vec4(world, 1.0);
           float dist = -mv.z;
-          vAlpha = (1.0 - smoothstep(uBox * 0.3, uBox * 0.5, dist)) * 0.7;
-          gl_PointSize = (18.0 / dist) * (0.4 + fract(aSeed) * 1.2) * uPixelRatio;
+          vAlpha = (1.0 - smoothstep(uBox * 0.26, uBox * 0.5, dist)) * 0.8;
+          vTint = fract(aSeed * 3.7);
+          gl_PointSize = (18.0 / dist) * (0.45 + fract(aSeed) * 1.3) * uPixelRatio;
           gl_Position = projectionMatrix * mv;
         }
       `,
       fragmentShader: /* glsl */ `
         varying float vAlpha;
+        varying float vTint;
         void main() {
           float d = length(gl_PointCoord - 0.5);
-          float a = smoothstep(0.5, 0.1, d) * vAlpha;
-          gl_FragColor = vec4(0.72, 0.82, 1.0, a * 0.5);
+          float a = smoothstep(0.5, 0.06, d) * vAlpha;
+          // A few motes carry the crystal's colour rather than the water's.
+          vec3 col = mix(vec3(0.62, 0.78, 0.88), vec3(0.55, 0.92, 1.0), step(0.82, vTint));
+          gl_FragColor = vec4(col, a * 0.5);
         }
       `,
     });
@@ -404,114 +406,138 @@ export class FallenKingdom implements Zone {
     this.buildParticles(scale);
   }
 
-  // ---- Zone interface -----------------------------------------------------
-
-  /** A gentle draw toward the centre and down — you are sinking into the well. */
-  getSpawnImpulse(out: Vector3): Vector3 {
-    return out.set(-5, -12, -18);
-  }
+  // ---- Zone interface -------------------------------------------------------
 
   getSpawn(out: Vector3): Vector3 {
-    return out.set(SHAFT.spawn.x, SHAFT.spawn.y, SHAFT.spawn.z);
+    return out.set(KINGDOM.spawn.x, KINGDOM.spawn.y, KINGDOM.spawn.z);
+  }
+
+  /**
+   * A downward shove on arrival. You did not swim into this place, you fell into
+   * it through a hole in the roof, and the first second should say so.
+   */
+  getSpawnImpulse(out: Vector3): Vector3 {
+    return out.set(0, -22, 6);
   }
 
   getBounds(): ZoneBounds {
-    // A square backstop just outside the circle; the real wall is the radial
-    // containAt, which holds the host at every height where a box cannot.
-    const b = SHAFT.radius + 30;
     return {
-      ceilingY: SHAFT.ceilingY,
-      minX: -b,
-      maxX: b,
-      minZ: -b,
-      maxZ: b,
-      softMargin: SHAFT.softMargin,
+      // Well above the breach, so the shaft is genuinely open at the top.
+      ceilingY: KINGDOM.sky + 60,
+      minX: KINGDOM.minX,
+      maxX: KINGDOM.maxX,
+      minZ: KINGDOM.minZ,
+      maxZ: KINGDOM.maxZ,
+      softMargin: KINGDOM.softMargin,
     };
   }
 
-  /** Radial containment inside the cylinder wall (delegated to the terrain). */
-  containAt(pos: Vector3, vel: Vector3, radius: number, dt: number): void {
-    this.terrain.containAt(pos, vel, radius, dt);
-  }
-
   getPopulationArea(): PopulationArea {
-    // Kept well inside the circle so nothing spawns in the wall; the ecosystem's
-    // roaming bubble spreads them through the shaft from there.
-    const r = SHAFT.radius * 0.62;
-    return { minX: -r, maxX: r, minZ: -r, maxZ: r };
+    return {
+      minX: KINGDOM.minX + 110,
+      maxX: KINGDOM.maxX - 110,
+      minZ: KINGDOM.minZ + 110,
+      maxZ: KINGDOM.maxZ - 110,
+    };
   }
 
   getPopulation(): PopEntry[] {
     return FALLEN_KINGDOM_POP;
   }
 
-  /** The kingdom grows its own crystal; the shared reef flora must not plant here. */
+  /** The kingdom grows its own crystal and weed; the shared reef scatter must not run. */
   getFloraArea(): PopulationArea | null {
     return null;
   }
 
   /**
-   * TWO Signal Carriers, on the basin floor at opposite sides of the well, each
-   * in its own crystal precinct. Clearing both is the Kingdom's objective.
+   * THREE Signal Carriers, one per district, so clearing the level walks you
+   * through the whole city: the throne on the acropolis, the great gate at the
+   * far end of the processional avenue, and the sunken cathedral down in the
+   * geode. Each sits somewhere you would swim to anyway just to see it.
    */
   getCarrierAnchors(): Vector3[] {
     const spots: [number, number][] = [
-      [118, -70],
-      [-128, 96],
+      [0, 0], // the throne, under the breach
+      [KINGDOM.gate.x + 30, 0], // just inside the great gate
+      // Down inside the collapse, among the crystal — far enough from the
+      // throat that the descent prompt never fires while you are fighting it.
+      [195, 178],
     ];
     return spots.map(([x, z]) => new Vector3(x, this.terrain.heightAt(x, z), z));
   }
 
-  /** The deepest relays yet — bigger and tougher than the Garden's. */
+  /** The deepest zone yet: the largest, toughest relays in the game so far. */
   getCarrierConfig(): { size: number; health: number } {
-    return { size: 17, health: 5200 };
+    return { size: 17, health: 5000 };
   }
 
   getDescentInfo(): DescentInfo {
-    return { targetName: 'The Abyss', recommendedDominance: 'Apex' };
-  }
-
-  /** The way down is the black throat at the centre of the basin. */
-  isInDescentZone(pos: Vector3): boolean {
-    const ex = SHAFT.exit;
-    return Math.hypot(pos.x - ex.x, pos.z - ex.z) < ex.radius * 0.8 && pos.y < SHAFT.floorY + 24;
+    return { targetName: 'The Cold Below', recommendedDominance: 'Apex' };
   }
 
   /**
-   * Declining the descent lifts the host up out of the throat and off-centre, so
-   * it climbs back into the well rather than being left wedged in the exit.
+   * The throat at the bottom of the geode. Gated on height as well as footprint:
+   * the vault here is 250 m up, so an x/z-only test would fire on a player
+   * swimming high over the basin who never went near the hole.
    */
+  isInDescentZone(pos: Vector3): boolean {
+    const e = KINGDOM.exit;
+    if (Math.hypot(pos.x - e.x, pos.z - e.z) > e.radius * 0.55) return false;
+    return pos.y < this.terrain.heightAt(e.x, e.z) + 40;
+  }
+
   repelFromDescent(pos: Vector3, vel: Vector3, dt: number): boolean {
-    const ex = SHAFT.exit;
-    const dx = pos.x - ex.x;
-    const dz = pos.z - ex.z;
+    const e = KINGDOM.exit;
+    const dx = pos.x - e.x;
+    const dz = pos.z - e.z;
     const d = Math.hypot(dx, dz);
-    if (d > ex.radius * 1.6 && pos.y > SHAFT.floorY + 30) return true;
-    vel.y += 52 * dt; // rise first — being down the throat is what traps you
+    const lipY = this.terrain.heightAt(e.x, e.z) + 46;
+    if (d > e.radius * 1.6 && pos.y > lipY - 8) return true;
+    vel.y += 52 * dt;
     if (d < 1e-3) {
       vel.x += 40 * dt;
       return false;
     }
-    vel.x += (dx / d) * 60 * dt;
-    vel.z += (dz / d) * 60 * dt;
+    vel.x += (dx / d) * 72 * dt;
+    vel.z += (dz / d) * 72 * dt;
     return false;
   }
 
-  // ---- frame update -------------------------------------------------------
+  // ---- frame update ---------------------------------------------------------
 
-  update(dt: number, camera: PerspectiveCamera, _renderer: WebGLRenderer): void {
+  update(dt: number, camera: PerspectiveCamera, renderer: WebGLRenderer): void {
     this.time += dt;
     this.particleMat.uniforms.uTime.value = this.time;
     this.particleMat.uniforms.uCamPos.value.copy(camera.position);
-    this.particleMat.uniforms.uPixelRatio.value = _renderer.getPixelRatio();
-    this.shaftMat.uniforms.uTime.value = this.time;
+    this.particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+    this.beamMat.uniforms.uTime.value = this.time;
 
-    // Depth cue: the deeper you sink, the murkier and darker the water, and the
-    // less the light from the open top reaches you.
-    const down = smoothstep(SHAFT.wallTop, SHAFT.floorY + 40, camera.position.y);
-    this.fog.density = 0.0028 + down * 0.0035;
-    this.topLight.intensity = 5.0 * (1 - down * 0.45);
-    this.hemi.intensity = 4.6 - down * 1.3;
+    const y = camera.position.y;
+
+    // How deep into the city you are: 0 up in the breach, 1 down on the streets.
+    const sunk = 1 - smoothstep(KINGDOM.acropolis.height, KINGDOM.vault * 1.4, y);
+    // And how far into the geode, which is darker and thicker than anywhere else.
+    const g = KINGDOM.geode;
+    const geodeD = Math.hypot(camera.position.x - g.x, camera.position.z - g.z);
+    const inGeode = (1 - smoothstep(g.r * 0.4, g.r, geodeD)) * (1 - smoothstep(-10, 60, y));
+
+    // Water clears as you rise toward the breach and thickens in the basin, so
+    // height itself becomes a navigational cue.
+    this.fog.density = 0.0034 + sunk * 0.0016 + inGeode * 0.0055;
+    this.hemi.intensity = 2.9 - sunk * 0.5 - inGeode * 0.9;
+    // Down in the geode the surface light is gone and only the crystal is left.
+    this.glowFill.intensity = 1.1 + inGeode * 2.4;
+    this.rakeA.intensity = 2.2 - inGeode * 1.1;
+    this.rakeB.intensity = 1.35 - inGeode * 0.8;
+
+    // The shaft breathes, and fades once you are down in the basin where you
+    // would be looking at it through half a city anyway.
+    const shimmer = 0.88 + Math.sin(this.time * 0.31) * 0.07 + Math.sin(this.time * 0.77) * 0.05;
+    this.beamMat.uniforms.uIntensity.value = shimmer * (1 - inGeode * 0.8);
+    this.shaftLight.intensity = 5.4 * (0.82 + shimmer * 0.2) * (1 - inGeode * 0.55);
+
+    this.city?.update(camera);
   }
 
   dispose(): void {
@@ -521,8 +547,8 @@ export class FallenKingdom implements Zone {
       if (mesh.isMesh || (obj as Points).type === 'Points') mesh.geometry?.dispose();
     });
     for (const d of this.disposables) d.dispose();
-    this.dressing_?.dispose();
-    this.dressing_ = null;
+    this.city?.dispose();
+    this.city = null;
     this.terrain.dispose();
   }
 }

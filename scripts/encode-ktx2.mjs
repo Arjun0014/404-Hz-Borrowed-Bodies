@@ -19,6 +19,10 @@ import { join } from 'node:path';
 const SETS = [
   { dir: 'assets/textures/coast_sand_rocks_02_1k', prefix: 'coast_sand_rocks_02' },
   { dir: 'assets/textures/lichen_rock_1k', prefix: 'lichen_rock' },
+  // The Fallen Kingdom's own pair: coursed masonry for everything that was
+  // BUILT, and a hard fractured rock for the cavern it was built inside.
+  { dir: 'assets/textures/castle_wall_slates_1k', prefix: 'castle_wall_slates' },
+  { dir: 'assets/textures/aerial_rocks_04_1k', prefix: 'aerial_rocks_04' },
 ];
 
 // Decode a JPG or PNG file buffer to raw RGBA (top-left first), as the Basis

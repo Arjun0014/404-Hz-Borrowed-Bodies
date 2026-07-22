@@ -33,23 +33,25 @@ export class ZoneManager {
    */
   createZone(depth: number, particleScale: number): Zone {
     let zone: Zone;
-    let rock;
+    let ground;
+    let trim;
     if (depth === 0) {
       zone = new ShallowVeil(this.scene);
-      rock = this.maps.seabed;
+      ground = this.maps.seabed;
     } else if (depth === 1) {
       zone = new DrownedGarden(this.scene);
-      rock = this.maps.lichen;
+      ground = this.maps.lichen;
     } else if (depth === 2) {
-      // The Fallen Kingdom: a drowned cathedral-well of stone and crystal. Damp
-      // lichen stone suits its ancient walls, same set the cave uses.
+      // The Fallen Kingdom is the one zone built of two stones: hard fractured
+      // rock for the cavern, coursed slate masonry for the city inside it.
       zone = new FallenKingdom(this.scene);
-      rock = this.maps.lichen;
+      ground = this.maps.rock ?? this.maps.lichen;
+      trim = this.maps.castle ?? this.maps.lichen;
     } else {
       zone = new BlockoutZone(this.scene, depth);
-      rock = this.maps.seabed;
+      ground = this.maps.seabed;
     }
-    zone.build(this.renderer, particleScale, rock);
+    zone.build(this.renderer, particleScale, ground, trim);
     return zone;
   }
 

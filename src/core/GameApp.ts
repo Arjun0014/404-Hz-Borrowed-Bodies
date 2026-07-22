@@ -23,6 +23,17 @@ import lichenDiffKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_r
 import lichenNorKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_nor_gl_1k.ktx2?url';
 import lichenArmKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_arm_1k.ktx2?url';
 import lichenDispKtxUrl from '../../assets/textures/lichen_rock_1k/ktx2/lichen_rock_disp_1k.ktx2?url';
+// The Fallen Kingdom needs TWO sets, because it is a built place standing in a
+// natural one: "aerial_rocks_04" for the cavern's hard fractured stone, and
+// "castle_wall_slates" for every wall, column and block the kingdom raised.
+import rockDiffKtxUrl from '../../assets/textures/aerial_rocks_04_1k/ktx2/aerial_rocks_04_diff_1k.ktx2?url';
+import rockNorKtxUrl from '../../assets/textures/aerial_rocks_04_1k/ktx2/aerial_rocks_04_nor_gl_1k.ktx2?url';
+import rockArmKtxUrl from '../../assets/textures/aerial_rocks_04_1k/ktx2/aerial_rocks_04_arm_1k.ktx2?url';
+import rockDispKtxUrl from '../../assets/textures/aerial_rocks_04_1k/ktx2/aerial_rocks_04_disp_1k.ktx2?url';
+import castleDiffKtxUrl from '../../assets/textures/castle_wall_slates_1k/ktx2/castle_wall_slates_diff_1k.ktx2?url';
+import castleNorKtxUrl from '../../assets/textures/castle_wall_slates_1k/ktx2/castle_wall_slates_nor_gl_1k.ktx2?url';
+import castleArmKtxUrl from '../../assets/textures/castle_wall_slates_1k/ktx2/castle_wall_slates_arm_1k.ktx2?url';
+import castleDispKtxUrl from '../../assets/textures/castle_wall_slates_1k/ktx2/castle_wall_slates_disp_1k.ktx2?url';
 import { Loop } from './Loop';
 import { Input } from './Input';
 import { AssetLoader } from './AssetLoader';
@@ -231,11 +242,13 @@ export class GameApp {
    * shared across zone rebuilds, so paying once at boot beats a hitch mid-descent.
    */
   private async loadZoneMaps(): Promise<ZoneMaps> {
-    const [seabed, lichen] = await Promise.all([
+    const [seabed, lichen, rock, castle] = await Promise.all([
       this.loadMapSet([seabedDiffKtxUrl, seabedNorKtxUrl, seabedArmKtxUrl, seabedDispKtxUrl]),
       this.loadMapSet([lichenDiffKtxUrl, lichenNorKtxUrl, lichenArmKtxUrl, lichenDispKtxUrl]),
+      this.loadMapSet([rockDiffKtxUrl, rockNorKtxUrl, rockArmKtxUrl, rockDispKtxUrl]),
+      this.loadMapSet([castleDiffKtxUrl, castleNorKtxUrl, castleArmKtxUrl, castleDispKtxUrl]),
     ]);
-    return { seabed, lichen };
+    return { seabed, lichen, rock, castle };
   }
 
   async start(): Promise<void> {

@@ -30,11 +30,15 @@ export interface TerrainMaps {
 
 /**
  * The PBR sets available to zones. Each zone picks the one that suits its rock:
- * the Shallow Veil's sunlit sand, or the cave's damp lichen-covered stone.
+ * the Shallow Veil's sunlit sand, the cave's damp lichen-covered stone, or the
+ * Fallen Kingdom's pair — hard fractured `rock` for the cavern it sits in, and
+ * coursed `castle` masonry for everything in it that was built.
  */
 export interface ZoneMaps {
   seabed?: TerrainMaps;
   lichen?: TerrainMaps;
+  rock?: TerrainMaps;
+  castle?: TerrainMaps;
 }
 
 /** Anything the movement/camera code can query for ground height. */
@@ -85,7 +89,18 @@ export interface Zone {
   readonly colliders: CylinderCollider[];
   readonly particleCount: number;
 
-  build(renderer: WebGLRenderer, particleScale: number, baseMaps?: TerrainMaps): void;
+  /**
+   * `baseMaps` dresses the zone's terrain shell. `trimMaps` is an optional
+   * SECOND set for zones whose built content is made of a different material
+   * than the ground it stands on — the Fallen Kingdom's masonry against its
+   * cavern rock. Zones with one kind of stone ignore it.
+   */
+  build(
+    renderer: WebGLRenderer,
+    particleScale: number,
+    baseMaps?: TerrainMaps,
+    trimMaps?: TerrainMaps,
+  ): void;
   /**
    * Optional second phase: load and place this zone's own .glb dressing (rock
    * packs, hero props, vegetation). Kept separate from `build` so the synchronous
@@ -141,17 +156,6 @@ export interface Zone {
    * in", because a single impulse never fights the player's own input.
    */
   getSpawnImpulse?(out: Vector3): Vector3;
-
-  /**
-   * Optional non-box containment, applied by the swim controller AFTER its own
-   * box-bounds clamp. The heightfield floor/roof model cannot express a tall
-   * VERTICAL wall (it is single-valued in Y), so a zone shaped as an upright
-   * cylinder — the Fallen Kingdom's open-topped well — implements this to push
-   * the host radially back inside its wall at every height. `radius` is the
-   * host's collision radius so the wall is fitted to the body. Mutates `pos`/`vel`
-   * in place. Zones with ordinary rectangular bounds omit it.
-   */
-  containAt?(pos: Vector3, vel: Vector3, radius: number, dt: number): void;
 
   /** True while the player is out in the deep / descent region. */
   isInDescentZone(pos: Vector3): boolean;

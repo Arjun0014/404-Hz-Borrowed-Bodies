@@ -299,6 +299,40 @@ export class Solids {
   }
 
   /**
+   * The highest solid surface standing over (x, z), or -Infinity if the column
+   * is clear.
+   *
+   * This exists for SPAWNING. Creature placement only ever consulted the
+   * terrain heightfield, which in a zone with architecture is the floor UNDER
+   * the buildings — so a fish dropped into the lower town materialised inside a
+   * house and spent its life shouldering a wall it had no way to leave. Asking
+   * what is actually standing here first puts it on the roof instead, and it can
+   * still swim down into the ruins on its own.
+   */
+  topAt(x: number, z: number, pad = 0): number {
+    this.gather(x, z, pad + 2, SCRATCH_D);
+    let top = -Infinity;
+    for (let n = 0; n < SCRATCH_D.length; n++) {
+      const idx = SCRATCH_D[n];
+      if (idx >= 0) {
+        const c = this.cylinders[idx];
+        if (Math.hypot(x - c.x, z - c.z) < c.r + pad && c.top > top) top = c.top;
+      } else {
+        const b = this.boxes[~idx];
+        if (b.top <= top) continue;
+        const cc = Math.cos(b.yaw);
+        const ss = Math.sin(b.yaw);
+        const rx = x - b.x;
+        const rz = z - b.z;
+        const lx = Math.abs(rx * cc - rz * ss) - b.hw;
+        const lz = Math.abs(rx * ss + rz * cc) - b.hd;
+        if (Math.hypot(Math.max(0, lx), Math.max(0, lz)) < pad) top = b.top;
+      }
+    }
+    return top;
+  }
+
+  /**
    * Soft steering: accumulate an outward nudge from anything within `reach`,
    * for creature navigation. Adds into `out` rather than replacing it.
    */
@@ -339,6 +373,7 @@ export class Solids {
 const SCRATCH: number[] = [];
 const SCRATCH_B: number[] = [];
 const SCRATCH_C: number[] = [];
+const SCRATCH_D: number[] = [];
 
 /**
  * The rotation convention, written out because getting it backwards is silent

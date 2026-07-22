@@ -47,10 +47,6 @@ export interface CreatureInstance {
  */
 export class CreatureFactory {
   private readonly models = new Map<string, CreatureModel>();
-  private readonly probeWrap = new Group();
-  private readonly box = new Box3();
-  private readonly size = new Vector3();
-  private readonly center = new Vector3();
 
   constructor(private readonly loader: AssetLoader) {}
 
@@ -102,33 +98,56 @@ export class CreatureFactory {
     });
   }
 
+  /**
+   * Measure a model's swim axis, scale, and pivot offset.
+   *
+   * Every temporary here is LOCAL, and that is the whole point. These four
+   * objects used to be shared instance fields, while `loadAll` runs every
+   * species concurrently through `Promise.all` — so each `await` inside a load
+   * handed the shared probe group, box, size and centre to whichever other
+   * species resumed next. Alignment was decided from whatever happened to be in
+   * the scratch at the time, which made the swim axis depend on network
+   * ordering: the same model came out nose-first on one load and broadside on
+   * the next, and no amount of staring at a single session could explain it.
+   * Measured directly: `eyemonster` and `anglerfish` reported an alignment yaw
+   * of -PI/2 on one run and 0 on the next with no code change in between.
+   */
   private measure(
     source: Object3D,
     species: CreatureSpecies,
   ): { alignYaw: number; scale: number; centerNeg: Vector3 } {
     const probe = source.clone();
-    this.probeWrap.clear();
-    this.probeWrap.rotation.set(0, 0, 0);
-    this.probeWrap.scale.setScalar(1);
-    this.probeWrap.position.set(0, 0, 0);
-    this.probeWrap.add(probe);
+    const wrap = new Group();
+    wrap.add(probe);
 
-    this.box.setFromObject(probe);
-    this.box.getSize(this.size);
+    const box = new Box3();
+    const size = new Vector3();
+    box.setFromObject(probe);
+    box.getSize(size);
     // Explicit per-model yaw wins; otherwise assume the longest horizontal axis
-    // is the swim axis and rotate it onto +Z (our forward).
-    let alignYaw = species.modelYaw ?? (this.size.x > this.size.z * 1.25 ? -Math.PI / 2 : 0);
+    // is the swim axis and rotate it onto +Z (our forward). The heuristic reads
+    // a SkinnedMesh in its bind pose, which does not always match the posed
+    // skeleton — models it gets wrong are pinned with `modelYaw` in creatures.ts.
+    let alignYaw = species.modelYaw ?? (size.x > size.z * 1.25 ? -Math.PI / 2 : 0);
     if (species.flipForward) alignYaw += Math.PI;
-    this.probeWrap.rotation.y = alignYaw;
-    this.probeWrap.updateMatrixWorld(true);
+    wrap.rotation.y = alignYaw;
+    wrap.updateMatrixWorld(true);
 
-    this.box.setFromObject(this.probeWrap);
-    this.box.getSize(this.size);
-    const scale = species.baseLength / Math.max(this.size.z, 1e-4);
-    this.box.getCenter(this.center);
-    const centerNeg = this.center.clone().multiplyScalar(-scale);
+    box.setFromObject(wrap);
+    box.getSize(size);
+    const scale = species.baseLength / Math.max(size.z, 1e-4);
+    const centerNeg = box.getCenter(new Vector3()).multiplyScalar(-scale);
+    // Per-model pivot correction, in baseLength multiples. Applied after the
+    // box centring so a species only has to describe how far its own body sits
+    // from the middle of its box, not re-derive the centring itself.
+    const off = species.modelOffset;
+    if (off) {
+      centerNeg.x += (off.x ?? 0) * species.baseLength;
+      centerNeg.y += (off.y ?? 0) * species.baseLength;
+      centerNeg.z += (off.z ?? 0) * species.baseLength;
+    }
 
-    this.probeWrap.clear();
+    wrap.clear();
     return { alignYaw, scale, centerNeg };
   }
 

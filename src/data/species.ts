@@ -304,6 +304,15 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     archetype: 'defensive',
     attack: { name: 'Lash', damageMult: 1.4, reachMult: 1.8, cooldown: 1.7, lungeSpeed: 13, sweep: false },
     ability: { kind: 'suction', name: 'Suction', cooldown: 9, duration: 1.6, desc: 'Draw everything nearby into your mouth and swallow it.' },
+    // The one host that is taller than it is long. A magnapinna carries its head
+    // ON TOP with ten metres of arm hanging below, so the model's bounding-box
+    // centre — which is what the camera frames — sits in the middle of the ARMS.
+    // The pivot itself is corrected in creatures.ts (`modelOffset`), because
+    // that was the actual fault -- the camera was aimed at empty water. These
+    // numbers then just give the silhouette room: it is 15.6 m long with the
+    // arms trailing, so it needs a little more height and standoff than a fish
+    // of the same length. This host's alone; nothing else changes.
+    camera: { distanceFactor: 4.6, minDistance: 8.0, heightFactor: 2.6, baseFov: 66 },
     connectionMult: 1.0,
     identity: 'Long-armed horror — it does not chase, it pulls.',
   },

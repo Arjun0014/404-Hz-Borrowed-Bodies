@@ -60,6 +60,17 @@ export interface CreatureSpecies {
    * Set per model so the head leads the swim direction (fixes "sideways" fish).
    */
   modelYaw?: number;
+  /**
+   * Nudge the model off its own bounding-box centre, in multiples of
+   * `baseLength`. Positive Y raises the body, positive Z pushes it forward.
+   *
+   * Auto-centring puts the pivot at the middle of the model's BOX, which is the
+   * right answer for a fish and the wrong one for anything whose mass is not
+   * where its body is. The camera frames this pivot and the lock-on reticle
+   * tracks it, so on a creature with long trailing parts both end up aimed at
+   * empty water. Set per model, and only where the box lies.
+   */
+  modelOffset?: { x?: number; y?: number; z?: number };
   role: CreatureRole;
   /** Apex (shark) can eat even other predators. */
   apex?: boolean;
@@ -203,6 +214,14 @@ export const SPECIES: CreatureSpecies[] = [
   {
     id: 'magnapinna', displayName: 'Magnapinna', modelUrl: magnapinnaUrl,
     baseLength: 5.2, baseHealth: 110, wildMaxGrowth: 0.28, flipForward: false,
+    // Same bind-pose misread as the megalodon: head at +Z, arms trailing to -Z.
+    modelYaw: Math.PI,
+    // A magnapinna hangs its mantle at the TOP with ten metres of arm below, so
+    // the box centre auto-centring picks lands deep in the arms — measured, the
+    // head bone sits 12.4 units above the pivot on a 5.2 m body. Possessing it
+    // put the camera in a curtain of tentacle with the animal off-frame. Drop
+    // the model so the pivot rides just under the mantle instead.
+    modelOffset: { y: -2.12 },
     role: 'predator', maxSpeed: 6.0, accel: 15, drag: 1.6, turnRate: 2.2,
     senseRadius: 34, schooling: false, hungerRate: 0.07, animSpeed: 0.9, procedural: false,
   },
@@ -210,6 +229,12 @@ export const SPECIES: CreatureSpecies[] = [
   {
     id: 'megalodon', displayName: 'Megalodon', modelUrl: megalodonUrl,
     baseLength: 11, baseHealth: 260, wildMaxGrowth: 0.18, flipForward: false,
+    // Pinned, because the longest-axis heuristic reads this model wrong.
+    // `measure()` sizes a skinned model from its BIND-pose Box3, which for these
+    // rigs does not match the posed skeleton, so the heuristic decided X was the
+    // swim axis and rotated the shark broadside to its own heading. The bones say
+    // otherwise: jaw at +Z, spine trailing to -Z once this yaw is applied.
+    modelYaw: Math.PI,
     role: 'predator', apex: true, maxSpeed: 13.5, accel: 26, drag: 1.25, turnRate: 1.8,
     senseRadius: 64, schooling: false, hungerRate: 0.06, animSpeed: 0.85, procedural: false,
   },
@@ -230,6 +255,9 @@ export const SPECIES: CreatureSpecies[] = [
   {
     id: 'monsterfish', displayName: 'Trench Horror', modelUrl: monsterFishUrl,
     baseLength: 9, baseHealth: 300, wildMaxGrowth: 0.55, flipForward: false,
+    // Authored head-first along +Z; the heuristic's bind-pose guess turned it
+    // broadside the other way from the megalodon. Pinned to no rotation at all.
+    modelYaw: 0,
     role: 'predator', apex: true, domClass: 'leviathan',
     maxSpeed: 11.5, accel: 22, drag: 1.3, turnRate: 1.7,
     senseRadius: 60, schooling: false, hungerRate: 0.06, animSpeed: 0.9, procedural: false,

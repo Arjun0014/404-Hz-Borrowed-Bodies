@@ -263,7 +263,7 @@ export class Ecosystem {
     const c = new Creature(sp, inst);
     c.phase = phase % 6;
     const len = lengthAt(sp.baseLength, growth01);
-    const gy = this.terrain!.heightAt(x, z);
+    const gy = this.floorAt(x, z, len);
     const py = this.preferredYFor(sp, x, z);
     const spawnY = sp.role === 'crab' ? gy + len * 0.3 : Math.max(gy + len * 0.45 + 0.5, y);
     c.spawn(x, spawnY, z, py, growth01);
@@ -271,8 +271,26 @@ export class Ecosystem {
     return c;
   }
 
-  private preferredYFor(sp: CreatureSpecies, x: number, z: number): number {
+  /**
+   * The surface a creature should be placed ON at (x, z) — the terrain, or the
+   * roof of whatever is standing on it.
+   *
+   * Only the heightfield used to be consulted, which is the ground UNDER the
+   * city. In the Fallen Kingdom that put fish inside houses, curtain walls and
+   * towers at spawn, wedged against masonry they could not steer out of. They
+   * are placed on top now and are free to swim down into the ruins themselves —
+   * the ask was that they not START stuck.
+   */
+  private floorAt(x: number, z: number, len: number): number {
     const gy = this.terrain!.heightAt(x, z);
+    const solid = this.solids.topAt(x, z, len * 0.5);
+    return solid > gy ? solid : gy;
+  }
+
+  private preferredYFor(sp: CreatureSpecies, x: number, z: number): number {
+    // Cruising altitude clears the architecture too, or a fish would sink
+    // straight back into the building it was just lifted out of.
+    const gy = this.floorAt(x, z, sp.baseLength);
     let y: number;
     switch (sp.role) {
       case 'prey': y = gy + 2 + Math.random() * 12; break;
@@ -328,8 +346,8 @@ export class Ecosystem {
       py = this.preferredYFor(c.species, x, z);
       growth01 = rollWildGrowth(c.species.wildMaxGrowth);
     }
-    const gy = this.terrain!.heightAt(x, z);
     const len = lengthAt(c.species.baseLength, growth01);
+    const gy = this.floorAt(x, z, len);
     const y = c.species.role === 'crab' ? gy + len * 0.3 : Math.max(gy + len * 0.45 + 0.5, py);
     c.spawn(x, y, z, py, growth01);
   }

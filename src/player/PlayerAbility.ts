@@ -279,27 +279,6 @@ export class PlayerAbility {
         this.sfx.carrierDeath();
         break;
       }
-      case 'gaze': {
-        // The watcher's eye. Everything with line of sight to it simply stops —
-        // hunters included, which is what makes this a defensive tool as much as
-        // an opening. Blinding them too means they do not resume mid-stare.
-        ORIGIN.copy(this.controller.pos);
-        const reach = this.fish.length * 7;
-        const list = this.ecosystem.list;
-        let held = 0;
-        for (let i = 0; i < list.length; i++) {
-          const c = list[i];
-          if (!c.alive) continue;
-          if (c.pos.distanceToSquared(ORIGIN) > reach * reach) continue;
-          c.stun(duration);
-          c.vel.multiplyScalar(0.1);
-          held++;
-        }
-        this.ecosystem.blindHunters(duration);
-        if (held > 0) this.camera.punch(12);
-        this.sfx.possess();
-        break;
-      }
     }
   }
 

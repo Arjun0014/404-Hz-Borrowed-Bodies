@@ -60,7 +60,7 @@ import { PlayerAbility } from '../player/PlayerAbility';
 import { PlayerResonance } from '../player/PlayerResonance';
 import { PlayerConnection } from '../player/PlayerConnection';
 import { Dominance } from '../systems/Dominance';
-import { Sfx, AMBIENT } from './Sfx';
+import { Sfx, AMBIENT, MUSIC } from './Sfx';
 import { DamageBars } from '../ui/DamageBars';
 import { SignalCarrier } from '../entities/SignalCarrier';
 import { DeadSignalField } from '../systems/DeadSignalField';
@@ -1351,10 +1351,20 @@ export class GameApp {
     el.classList.remove('hidden');
   }
 
-  /** Loop the current zone's background ambience (Shallow Veil vs deeper). */
+  /**
+   * Loop the current zone's background ambience, and start its theme.
+   *
+   * Two layers on purpose: the ambience is the water and never changes volume,
+   * while the score arrives loud for its first thirty seconds and then settles
+   * underneath (see Sfx.playMusic). The Shallow Veil has no theme — the surface
+   * stays quiet so that dropping into the Garden has something to announce.
+   */
   private updateZoneAmbient(): void {
     const depth = this.runState.data.depth;
     void this.sfx.playAmbient(depth === 0 ? AMBIENT.shallowVeil : AMBIENT.drownedGarden);
+    const theme = depth === 1 ? MUSIC.drownedGarden : depth >= 2 ? MUSIC.fallenKingdom : null;
+    if (theme) void this.sfx.playMusic(theme);
+    else this.sfx.stopMusic();
   }
 
   private onHostDeath(): void {
@@ -1379,6 +1389,7 @@ export class GameApp {
     this.damageBars.hideAll();
     this.sfx.setConnectionDrone(0);
     this.sfx.setFieldTone(0);
+    this.sfx.stopMusic(2.5); // the score dies with the host
     document.getElementById('lock-reticle')?.classList.add('hidden');
     document.getElementById('possess-prompt')?.classList.add('hidden');
     document.getElementById('connection-warning')?.classList.add('hidden');

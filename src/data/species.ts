@@ -76,9 +76,7 @@ export type AbilityKind =
   /** Koi: an enormous speed surge — the fastest thing in the game, faster. */
   | 'slipstream'
   /** Trench Horror: a thrashing sweep that mauls everything within reach. */
-  | 'maelstrom'
-  /** Watcher: its gaze freezes every creature that can see it. */
-  | 'gaze';
+  | 'maelstrom';
 
 export interface AbilityDef {
   kind: AbilityKind;
@@ -352,13 +350,18 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     connectionMult: 1.0,
     identity: 'What the drowned city grew after the people left.',
   },
-  eyemonster: {
+
+  eldermagnapinna: {
     archetype: 'apex',
-    attack: { name: 'Swallow', damageMult: 2.8, reachMult: 1.35, cooldown: 1.7, lungeSpeed: 23, sweep: true },
-    ability: { kind: 'gaze', name: 'Gaze', cooldown: 12, duration: 3.0, desc: 'Hold them in your eye — everything that can see you stops dead.' },
-    camera: { distanceFactor: 2.3, minDistance: 5.5, heightFactor: 1.5, baseFov: 66 },
+    // The same animal as the Garden's magnapinna, so it keeps the arms and the
+    // suction — just at a scale where the arms are the length of a building.
+    attack: { name: 'Coil', damageMult: 3.1, reachMult: 2.2, cooldown: 2.0, lungeSpeed: 15, sweep: true },
+    ability: { kind: 'suction', name: 'Maw', cooldown: 10, duration: 2.6, desc: 'Draw the whole trench in and swallow what arrives.' },
+    // Same framing problem as its smaller kin, at a bigger scale: the pivot fix
+    // lives in creatures.ts, and these numbers give the arms room.
+    camera: { distanceFactor: 4.6, minDistance: 12.0, heightFactor: 2.6, baseFov: 68 },
     connectionMult: 1.0,
-    identity: 'It was watching the whole time. Now you are the one watching.',
+    identity: 'It was here before the city, and it is still here.',
   },
 
   shark: {

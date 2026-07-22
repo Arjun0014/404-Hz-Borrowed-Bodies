@@ -17,7 +17,6 @@ import mantaUrl from '../../assets/drowned garden/manta.glb?url';
 import magnapinnaUrl from '../../assets/drowned garden/magnapinna_squid.glb?url';
 import fireflySquidUrl from '../../assets/drowned garden/firefly-squid-glowing.glb?url';
 import monsterFishUrl from '../../assets/fallen kingdom/monster_fish.glb?url';
-import eyeMonsterUrl from '../../assets/fallen kingdom/eye_monster.glb?url';
 import anglerfishUrl from '../../assets/fallen kingdom/weird_deepsea_anglerfish.glb?url';
 import koiUrl from '../../assets/fallen kingdom/secret_low_poly_cartoon_koi_fish.glb?url';
 
@@ -262,12 +261,30 @@ export const SPECIES: CreatureSpecies[] = [
     maxSpeed: 11.5, accel: 22, drag: 1.3, turnRate: 1.7,
     senseRadius: 60, schooling: false, hungerRate: 0.06, animSpeed: 0.9, procedural: false,
   },
+
+  /**
+   * The Elder Magnapinna: the trench's other leviathan, and the reason the
+   * Watcher is gone. That model had no swim cycle and skated through the water
+   * looking broken, so its ecological slot went to the one creature already in
+   * the game that reads as genuinely deep-sea horror — scaled up until it is
+   * unmistakably not the ones in the Garden.
+   *
+   * A SEPARATE species rather than a bigger `wildMaxGrowth` on `magnapinna`,
+   * because that field is shared and the Drowned Garden's population must not
+   * move. Same GLB (the loader caches by URL, so it costs nothing extra), same
+   * pivot and yaw corrections, 2.7x the base length: 14 m at its smallest and
+   * 39 m at its largest, against the Garden's 5-11 m.
+   */
   {
-    id: 'eyemonster', displayName: 'Watcher', modelUrl: eyeMonsterUrl,
-    baseLength: 8, baseHealth: 280, wildMaxGrowth: 0.5, flipForward: false,
+    id: 'eldermagnapinna', displayName: 'Elder Magnapinna', modelUrl: magnapinnaUrl,
+    baseLength: 14, baseHealth: 420, wildMaxGrowth: 0.45, flipForward: false,
+    modelYaw: Math.PI,
+    modelOffset: { y: -2.12 },
     role: 'predator', apex: true, domClass: 'leviathan',
-    maxSpeed: 10.5, accel: 19, drag: 1.35, turnRate: 2.0,
-    senseRadius: 66, schooling: false, hungerRate: 0.05, animSpeed: 0.8, procedural: false,
+    // Slow and inexorable. It does not chase you down, it is simply already
+    // between you and wherever you were going.
+    maxSpeed: 8.5, accel: 13, drag: 1.5, turnRate: 1.3,
+    senseRadius: 72, schooling: false, hungerRate: 0.05, animSpeed: 0.7, procedural: false,
   },
 
   /**
@@ -434,7 +451,10 @@ export const FALLEN_KINGDOM_POP: PopEntry[] = [
 
   // ---- the trench's own: the giants this zone is actually about -----------
   { speciesId: 'monsterfish', count: 8 },
-  { speciesId: 'eyemonster', count: 7 },
+  // Two, and two only. At up to 39 m they are the largest living things in the
+  // zone after the Herald, and meeting one should be an event rather than a
+  // population.
+  { speciesId: 'eldermagnapinna', count: 2 },
   // Two each, in a 760 x 760 m city. Finding one is the event.
   { speciesId: 'anglerfish', count: 2 },
   { speciesId: 'koi', count: 2 },

@@ -109,8 +109,8 @@ export class CreatureFactory {
    * the scratch at the time, which made the swim axis depend on network
    * ordering: the same model came out nose-first on one load and broadside on
    * the next, and no amount of staring at a single session could explain it.
-   * Measured directly: `eyemonster` and `anglerfish` reported an alignment yaw
-   * of -PI/2 on one run and 0 on the next with no code change in between.
+   * Measured directly: the same two models reported an alignment yaw of -PI/2
+   * on one run and 0 on the next, with no code change in between.
    */
   private measure(
     source: Object3D,

@@ -3,12 +3,34 @@ import biteLandedUrl from '../../assets/sounds/bite_landed.mp3?url';
 import randomBitesUrl from '../../assets/sounds/random_bite_sounds.wav?url';
 import shadowVeilAmbientUrl from '../../assets/sounds/shadow_veil_ambient.wav?url';
 import drownedGardenAmbientUrl from '../../assets/sounds/drowned_garden_ambient.mp3?url';
+import drownedGardenMusicUrl from '../../assets/sounds/music/drowned_garden.mp3?url';
+import fallenKingdomMusicUrl from '../../assets/sounds/music/fallen_kingdom.mp3?url';
 
 /** Per-zone background ambience tracks. */
 export const AMBIENT = {
   shallowVeil: shadowVeilAmbientUrl,
   drownedGarden: drownedGardenAmbientUrl,
 } as const;
+
+/**
+ * Per-zone score. Separate from AMBIENT: the ambience is the water, this is the
+ * music over it, and the two run on their own gain stages so arriving somewhere
+ * can be scored without drowning the room tone.
+ *
+ * The Shallow Veil has none on purpose — it is the surface, and silence there is
+ * what makes the first descent land. (Dreaming Trench's track is on disk and
+ * gets wired when that zone exists.)
+ */
+export const MUSIC = {
+  drownedGarden: drownedGardenMusicUrl,
+  fallenKingdom: fallenKingdomMusicUrl,
+} as const;
+
+/** Seconds a zone's theme plays up front before it settles into the background. */
+const MUSIC_FOREGROUND_SECONDS = 30;
+/** Gain for that opening statement, and for the bed it becomes afterwards. */
+const MUSIC_GAIN_FOREGROUND = 0.62;
+const MUSIC_GAIN_BACKGROUND = 0.15;
 
 /**
  * Audio: real recorded samples for the things you hear constantly — a subtle
@@ -34,6 +56,11 @@ export class Sfx {
   private ambientGain: GainNode | null = null;
   private currentAmbientUrl = '';
   private readonly ambientCache = new Map<string, AudioBuffer>();
+
+  private musicSrc: AudioBufferSourceNode | null = null;
+  private musicGain: GainNode | null = null;
+  private currentMusicUrl = '';
+  private readonly musicCache = new Map<string, AudioBuffer>();
 
   // Connection dread drone (persistent, fades with Connection level).
   private droneOsc: OscillatorNode | null = null;
@@ -148,6 +175,88 @@ export class Sfx {
     src.start();
     this.ambientSrc = src;
     this.ambientGain.gain.setTargetAtTime(gain, ac.currentTime, 1.2); // gentle fade-in
+  }
+
+  // ---- per-zone score -------------------------------------------------------
+
+  /**
+   * Start a zone's theme: forward for the first half minute, then settled back
+   * to a bed it keeps under everything else.
+   *
+   * Scheduled on the AudioContext clock rather than a `setTimeout`, so the
+   * hand-off is sample-accurate and cannot drift or fire while the tab is
+   * throttled — the ramp is already queued the moment the track starts. The long
+   * 6 s ease is the point: the music should recede while you stop noticing it,
+   * not duck.
+   */
+  async playMusic(url: string): Promise<void> {
+    const ac = this.ac();
+    if (!ac || !this.master) return;
+    if (this.currentMusicUrl === url && this.musicSrc) return; // already playing
+    this.currentMusicUrl = url;
+
+    let buf = this.musicCache.get(url);
+    if (!buf) {
+      const decoded = await this.fetchBuf(url);
+      if (!decoded || this.currentMusicUrl !== url) return; // zone changed while loading
+      buf = decoded;
+      this.musicCache.set(url, buf);
+    }
+    this.stopMusicSource();
+
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = ac.createGain();
+    const t = ac.currentTime;
+    // Start audible-but-quiet rather than at silence. An exponential ramp from
+    // 0.0001 to 0.62 spans a factor of 6,200 and is brutally back-loaded — it
+    // measures 0.008 at the halfway mark, so the track is inaudible for two
+    // seconds and then arrives all at once. From 0.03 the same curve rises
+    // evenly and reads as the music swelling in.
+    gain.gain.setValueAtTime(0.03, t);
+    gain.gain.exponentialRampToValueAtTime(MUSIC_GAIN_FOREGROUND, t + 2.5);
+    gain.gain.setValueAtTime(MUSIC_GAIN_FOREGROUND, t + MUSIC_FOREGROUND_SECONDS);
+    gain.gain.exponentialRampToValueAtTime(
+      MUSIC_GAIN_BACKGROUND,
+      t + MUSIC_FOREGROUND_SECONDS + 6,
+    );
+    src.connect(gain).connect(this.master);
+    src.start();
+    this.musicSrc = src;
+    this.musicGain = gain;
+  }
+
+  /** Fade the score out — used when a zone has none, and on death. */
+  stopMusic(fade = 1.5): void {
+    const ac = this.ctx;
+    this.currentMusicUrl = '';
+    if (!ac || !this.musicGain || !this.musicSrc) return;
+    const g = this.musicGain;
+    const src = this.musicSrc;
+    g.gain.cancelScheduledValues(ac.currentTime);
+    g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + fade);
+    this.musicSrc = null;
+    this.musicGain = null;
+    window.setTimeout(() => {
+      try {
+        src.stop();
+      } catch {
+        /* already stopped */
+      }
+    }, fade * 1000 + 100);
+  }
+
+  private stopMusicSource(): void {
+    if (!this.musicSrc) return;
+    try {
+      this.musicSrc.stop();
+    } catch {
+      /* already stopped */
+    }
+    this.musicSrc = null;
+    this.musicGain = null;
   }
 
   // ---- bite one-shots -------------------------------------------------------

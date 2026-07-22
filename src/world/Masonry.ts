@@ -98,6 +98,72 @@ function finish(parts: BufferGeometry[]): BufferGeometry {
   return merged;
 }
 
+// ---- solidity reporting ----------------------------------------------------
+
+/**
+ * Where a generated piece's stone actually IS, so collision can match it.
+ *
+ * Generated ruin is the whole point of this module, which means the collision
+ * shape cannot be authored by hand — a wall's surviving height varies along its
+ * own length and it has a doorway punched through it, and a single box round the
+ * whole thing would seal the door and wall off the interior. So every wall
+ * reports the profile it actually built and the caller turns that into colliders.
+ *
+ * Attached to the geometry's `userData` rather than returned, so adding it does
+ * not churn the signature of every generator and every call site.
+ */
+export interface WallSolid {
+  /** Length along the piece's local X, and full thickness along local Z. */
+  length: number;
+  thickness: number;
+  /** Surviving top height (metres above the piece's base) at even samples. */
+  tops: Float32Array;
+}
+
+/** One wall of a composed piece, positioned in the piece's own local space. */
+export interface PartSolid {
+  dx: number;
+  dz: number;
+  yaw: number;
+  solid: WallSolid;
+}
+
+/**
+ * A plain upright block a generator built, in the piece's own local space.
+ *
+ * The wall profile above describes something long, thin and coursed. Not every
+ * generated piece is that shape: a flight of stairs is a stack of slabs, each
+ * at its own height, and squashing it into a wall profile would either seal the
+ * flight into a solid ramp-block or (as it shipped) report nothing at all and
+ * let you swim through the one route up to the citadel. So generators that
+ * build a pile of blocks report the blocks.
+ */
+export interface BoxSolid {
+  /** Centre in the piece's local space. */
+  dx: number;
+  dy: number;
+  dz: number;
+  /** Half extents along local X, Y, Z. */
+  hw: number;
+  hh: number;
+  hd: number;
+}
+
+export function boxSolidsOf(geo: BufferGeometry): BoxSolid[] | undefined {
+  return geo.userData.boxSolids as BoxSolid[] | undefined;
+}
+
+/** Sample spacing for wall profiles, metres. */
+const SOLID_STEP = 2;
+
+export function wallSolidOf(geo: BufferGeometry): WallSolid | undefined {
+  return geo.userData.wallSolid as WallSolid | undefined;
+}
+
+export function partSolidsOf(geo: BufferGeometry): PartSolid[] | undefined {
+  return geo.userData.partSolids as PartSolid[] | undefined;
+}
+
 /** Smooth 1-D value noise on a 0..1 parameter — used for ruin profiles. */
 function ridge(u: number, seed: number, freq: number): number {
   const h = (i: number): number => {
@@ -223,7 +289,23 @@ export function makeWall(seed: number, opts: WallOpts): BufferGeometry {
     }
   }
 
-  return finish(parts);
+  const geo = finish(parts);
+
+  // Report the profile that was actually built, sampled along the wall. The
+  // doorway reads as zero — an opening from the floor up is something you swim
+  // THROUGH, and the lintel over it is not worth a collider.
+  const n = Math.max(2, Math.round(length / SOLID_STEP) + 1);
+  const tops = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1);
+    let top = topAt(u) * height;
+    if (breachAt >= 0 && Math.abs(u - breachAt) < breachWidth) top = 0;
+    tops[i] = top;
+  }
+  const solid: WallSolid = { length, thickness, tops };
+  geo.userData.wallSolid = solid;
+  geo.userData.partSolids = [{ dx: 0, dz: 0, yaw: 0, solid }] satisfies PartSolid[];
+  return geo;
 }
 
 // ---- columns ---------------------------------------------------------------
@@ -437,6 +519,8 @@ export function makeBuilding(seed: number, opts: BuildingOpts): BufferGeometry {
     { len: depth, x: width / 2, z: 0, rot: Math.PI / 2 },
   ];
 
+  const solids: PartSolid[] = [];
+
   faces.forEach((f, i) => {
     // A corner collapse takes the ends off the two walls that met there.
     let localRuin = ruin;
@@ -453,6 +537,8 @@ export function makeBuilding(seed: number, opts: BuildingOpts): BufferGeometry {
       breachWidth: i === doorFace ? 0.14 : 0,
       courseHeight: 1.5,
     });
+    const ws = wallSolidOf(wall);
+    if (ws) solids.push({ dx: f.x, dz: f.z, yaw: f.rot, solid: ws });
     const m = new Matrix4();
     const q = new Quaternion().setFromAxisAngle(UP, f.rot);
     m.compose(new Vector3(f.x, 0, f.z), q, new Vector3(1, 1, 1));
@@ -468,9 +554,12 @@ export function makeBuilding(seed: number, opts: BuildingOpts): BufferGeometry {
       ruin: Math.min(0.95, ruin + 0.25),
       courseHeight: 1.5,
     });
+    const dx = (rand() - 0.5) * width * 0.3;
+    const ws = wallSolidOf(wall);
+    if (ws) solids.push({ dx, dz: 0, yaw: Math.PI / 2, solid: ws });
     const m = new Matrix4();
     const q = new Quaternion().setFromAxisAngle(UP, Math.PI / 2);
-    m.compose(new Vector3((rand() - 0.5) * width * 0.3, 0, 0), q, new Vector3(1, 1, 1));
+    m.compose(new Vector3(dx, 0, 0), q, new Vector3(1, 1, 1));
     wall.applyMatrix4(m);
     parts.push(wall);
   }
@@ -492,13 +581,16 @@ export function makeBuilding(seed: number, opts: BuildingOpts): BufferGeometry {
     );
   }
 
-  return finish(parts);
+  const geo = finish(parts);
+  geo.userData.partSolids = solids;
+  return geo;
 }
 
 /** A square tower: taller, thicker-walled, crenellated, on the curtain wall. */
 export function makeTower(seed: number, side: number, height: number, ruin = 0.3): BufferGeometry {
   const rand = mulberry32(seed);
   const parts: BufferGeometry[] = [];
+  const solids: PartSolid[] = [];
   const th = 2.2 + rand() * 0.8;
   for (let i = 0; i < 4; i++) {
     const rot = (i * Math.PI) / 2;
@@ -510,13 +602,13 @@ export function makeTower(seed: number, side: number, height: number, ruin = 0.3
       crenellated: true,
       windows: i % 2 === 0,
     });
+    const dx = Math.sin(rot) * (side / 2);
+    const dz = -Math.cos(rot) * (side / 2);
+    const ws = wallSolidOf(wall);
+    if (ws) solids.push({ dx, dz, yaw: rot, solid: ws });
     const m = new Matrix4();
     const q = new Quaternion().setFromAxisAngle(UP, rot);
-    m.compose(
-      new Vector3(Math.sin(rot) * (side / 2), 0, -Math.cos(rot) * (side / 2)),
-      q,
-      new Vector3(1, 1, 1),
-    );
+    m.compose(new Vector3(dx, 0, dz), q, new Vector3(1, 1, 1));
     wall.applyMatrix4(m);
     parts.push(wall);
   }
@@ -539,7 +631,9 @@ export function makeTower(seed: number, side: number, height: number, ruin = 0.3
       parts.push(g);
     }
   }
-  return finish(parts);
+  const geo = finish(parts);
+  geo.userData.partSolids = solids;
+  return geo;
 }
 
 // ---- stairs ----------------------------------------------------------------
@@ -558,12 +652,26 @@ export function makeStairs(
 ): BufferGeometry {
   const rand = mulberry32(seed);
   const parts: BufferGeometry[] = [];
+  // Each tread is reported so the flight collides as the staircase it looks
+  // like — you climb it step by step instead of swimming through it, and the
+  // gaps where a tread is missing stay gaps.
+  const solids: BoxSolid[] = [];
   for (let i = 0; i < steps; i++) {
     // A few treads are cracked out of line, and a few missing entirely.
     if (rand() < 0.06) continue;
     const w = width * (0.94 + rand() * 0.1);
     // Each tread is a slab sitting on the fill below it, so the flight has mass.
     block(parts, 0, (i + 0.5) * rise, (i + 0.5) * run, w, rise, run * 1.05, rand, 1.4);
+    // The tread is a slab on top of solid fill, so the collider runs from the
+    // flight's base up to the tread: a stair is not a floating shelf.
+    solids.push({
+      dx: 0,
+      dy: (i + 0.5) * rise * 0.5,
+      dz: (i + 0.5) * run,
+      hw: w / 2,
+      hh: Math.abs((i + 0.5) * rise * 0.5) + Math.abs(rise) * 0.5,
+      hd: Math.abs(run * 1.05) / 2,
+    });
     if (rand() < 0.35) {
       // A broken-off corner slab tumbled onto the flight.
       const s = rise * (1.4 + rand() * 1.6);
@@ -580,24 +688,33 @@ export function makeStairs(
       );
     }
   }
-  // Cheek walls either side, so the flight is contained.
+  // Cheek walls either side, so the flight is contained. These are reported
+  // too: they are the balustrades, they are half the flight's geometry, and
+  // leaving them out was why the stair collided at 44% of its own mesh while
+  // every other structure in the zone sat at 99%.
   for (const side of [-1, 1]) {
     for (let i = 0; i < steps; i++) {
       if (rand() < 0.25) continue;
-      block(
-        parts,
-        (side * width) / 2 + side * 1.2,
-        (i + 0.5) * rise + rise * 0.9,
-        (i + 0.5) * run,
-        2.4,
-        rise * 2.2,
-        run,
-        rand,
-        1.6,
-      );
+      const cx = (side * width) / 2 + side * 1.2;
+      const cy = (i + 0.5) * rise + rise * 0.9;
+      const cz = (i + 0.5) * run;
+      block(parts, cx, cy, cz, 2.4, rise * 2.2, run, rand, 1.6);
+      // Like a tread, a cheek stands on the fill under it rather than floating,
+      // so its collider runs from the flight's base up to its own top.
+      const top = cy + Math.abs(rise) * 1.1;
+      solids.push({
+        dx: cx,
+        dy: top * 0.5,
+        dz: cz,
+        hw: 1.2,
+        hh: Math.abs(top) * 0.5,
+        hd: Math.abs(run) / 2,
+      });
     }
   }
-  return finish(parts);
+  const geo = finish(parts);
+  geo.userData.boxSolids = solids satisfies BoxSolid[];
+  return geo;
 }
 
 // ---- natural rock ----------------------------------------------------------

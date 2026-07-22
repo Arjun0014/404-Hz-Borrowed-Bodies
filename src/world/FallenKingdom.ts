@@ -33,6 +33,7 @@ import type {
   Zone,
   ZoneBounds,
 } from './types';
+import type { BoxCollider } from './Solids';
 import { FALLEN_KINGDOM_POP } from '../data/creatures';
 import type { PopEntry } from '../data/creatures';
 
@@ -79,6 +80,11 @@ export class FallenKingdom implements Zone {
   readonly group = new Group();
   readonly terrain = new KingdomTerrain();
   readonly colliders: CylinderCollider[] = [];
+  /**
+   * Wall solids. This is the only zone with architecture, and a wall is the one
+   * obstacle a cylinder cannot describe — see {@link BoxCollider}.
+   */
+  readonly boxColliders: BoxCollider[] = [];
   particleCount = 0;
 
   private readonly scene: Scene;
@@ -116,12 +122,11 @@ export class FallenKingdom implements Zone {
     this.scene.background = new Color(0x04080e);
 
     // Base readability. A hemisphere is the only light that reaches the far side
-    // of a 760 m map for free, so it carries the load; its sky term is the
-    // breach and the crystal, its ground term is silt.
-    // Sky term is the breach and the crystal; ground term is warm silt rather
-    // than black. A cold sky over a cold ground made every surface in the zone
-    // the same blue and the city read as one flat teal mass — the warm bounce is
-    // what separates a lit face from a shadowed one at distance.
+    // of a 760 m map for free, so it carries the load. Sky term is the breach
+    // and the crystal; ground term is warm silt rather than black — a cold sky
+    // over a cold ground made every surface in the zone the same blue and the
+    // city read as one flat teal mass, and the warm bounce is what separates a
+    // lit face from a shadowed one at distance.
     this.hemi = new HemisphereLight(0x6f9dc4, 0x241d16, 2.7);
     this.group.add(this.hemi);
 
@@ -182,13 +187,15 @@ export class FallenKingdom implements Zone {
     this.scene.add(this.group);
   }
 
-  async dressing(loader: AssetLoaderLike): Promise<void> {
-    this.city = new KingdomDressing(this.group, this.terrain, this.masonryTexture);
+  async dressing(loader: AssetLoaderLike, densityScale = 1): Promise<void> {
+    this.city = new KingdomDressing(this.group, this.terrain, this.masonryTexture, densityScale);
     await this.city.build(loader);
     for (const c of this.city.colliders) this.colliders.push(c);
+    for (const b of this.city.boxes) this.boxColliders.push(b);
     console.log(
       `[404hz] fallen kingdom dressing: +${this.city.drawCalls} draw calls, ` +
-        `+${(this.city.tris / 1000).toFixed(0)}k tris`,
+        `+${(this.city.tris / 1000).toFixed(0)}k tris, ` +
+        `${this.colliders.length} cylinders + ${this.boxColliders.length} wall boxes`,
     );
   }
 
@@ -458,7 +465,10 @@ export class FallenKingdom implements Zone {
    */
   getCarrierAnchors(): Vector3[] {
     const spots: [number, number][] = [
-      [0, 0], // the throne, under the breach
+      // In the NAVE, in front of the throne — not on it. The throne crystal is
+      // 82 m across and sits dead centre, so a carrier at (0,0) spawned inside
+      // it: invisible, unreachable, and unkillable.
+      [-52, 0],
       [KINGDOM.gate.x + 30, 0], // just inside the great gate
       // Down inside the collapse, among the crystal — far enough from the
       // throat that the descent prompt never fires while you are fighting it.

@@ -16,6 +16,7 @@ import {
 import { RockPack, type RockPiece } from './RockPack';
 import { KINGDOM, type KingdomTerrain, avenueMask } from './KingdomTerrain';
 import {
+  boxSolidsOf,
   makeArch,
   makeBuilding,
   makeColumn,
@@ -26,7 +27,9 @@ import {
   makeTower,
   makeWall,
   mulberry32,
+  partSolidsOf,
 } from './Masonry';
+import type { BoxCollider } from './Solids';
 import type { AssetLoaderLike, CylinderCollider } from './types';
 
 import columnUrl from '../../assets/fallen kingdom/column_compressed.glb?url';
@@ -83,6 +86,8 @@ import luminescentUrl from '../../assets/luminescent_plants.glb?url';
  */
 
 const UP = new Vector3(0, 1, 0);
+/** Reused corner for bounding-box transforms; see {@link KingdomDressing.worldExtent}. */
+const CORNER = new Vector3();
 
 /** Yaw that turns a piece built along +X so it runs TANGENTIALLY at angle `a`. */
 function tangentYaw(a: number): number {
@@ -107,6 +112,8 @@ interface Perch {
 
 export class KingdomDressing {
   readonly colliders: CylinderCollider[] = [];
+  /** Wall solids. Everything coursed reports its own; see {@link emitSolids}. */
+  readonly boxes: BoxCollider[] = [];
   tris = 0;
   drawCalls = 0;
 
@@ -118,11 +125,15 @@ export class KingdomDressing {
   /** Accumulated instance placements, keyed by geometry + bucket. */
   private readonly queue = new Map<
     string,
-    { geo: BufferGeometry; mat: MeshStandardMaterial; tris: number; items: Placement[] }
+    { name: string; geo: BufferGeometry; mat: MeshStandardMaterial; tris: number; items: Placement[] }
   >();
 
   /** Places crystal and weed can grow, gathered as the city is built. */
   private readonly perches: Perch[] = [];
+  /** Budget counter for the expensive medium-poly crystal spears. */
+  private spearCount = 0;
+  /** Bucketed scatter meshes, with their extent, for the distance cull. */
+  private readonly scatter: { mesh: InstancedMesh; cx: number; cz: number; r: number }[] = [];
 
   /** Everything down in the geode, so it can be culled when you are not. */
   private readonly geodeGroup = new Group();
@@ -131,9 +142,21 @@ export class KingdomDressing {
     private readonly group: Group,
     private readonly terrain: KingdomTerrain,
     private readonly masonryTexture: Texture | null,
+    /**
+     * Scatter density from the quality setting. Scales vegetation, crystal, and
+     * loose rubble only — never the architecture, because a city with a third
+     * of its buildings missing is a different level, whereas a city with a third
+     * less weed on it is the same level running faster.
+     */
+    private readonly density = 1,
   ) {
     this.geodeGroup.name = 'kingdom-geode';
     this.group.add(this.geodeGroup);
+  }
+
+  /** Apply the density scale to a scatter count, never dropping it to nothing. */
+  private n(count: number): number {
+    return this.density >= 1 ? count : Math.max(1, Math.round(count * this.density));
   }
 
   async build(loader: AssetLoaderLike): Promise<void> {
@@ -273,10 +296,21 @@ export class KingdomDressing {
     c: Color,
     bucket = '',
   ): void {
-    const k = bucket ? `${key}#${bucket}` : key;
+    // The GEOMETRY is part of the key, and that is not optional.
+    //
+    // An InstancedMesh draws one geometry. Keying a bucket by name alone means
+    // every variant sharing that name — all eleven house plans, all six curtain
+    // segments, every distinct flight of stairs — lands in the bucket opened by
+    // the FIRST one and is then drawn with that first variant's mesh. The town
+    // silently becomes one repeated building, and, far worse, `emitSolids` runs
+    // on the variant that was ASKED for while the screen shows a different
+    // shape: colliders that do not match the walls you can see, in both
+    // directions. That is precisely "I swim through walls and hit invisible
+    // ones", and it is invisible to any test that trusts the placement data.
+    const k = `${key}|${bucket}|${geo.uuid}`;
     let q = this.queue.get(k);
     if (!q) {
-      q = { geo, mat, tris, items: [] };
+      q = { name: key, geo, mat, tris, items: [] };
       this.queue.set(k, q);
     }
     q.items.push({ m: m.clone(), c: c.clone() });
@@ -291,7 +325,7 @@ export class KingdomDressing {
     for (const [key, q] of this.queue) {
       if (q.items.length === 0) continue;
       const im = new InstancedMesh(q.geo, q.mat, q.items.length);
-      im.name = `kingdom-${key}`;
+      im.name = `kingdom-${q.name}`;
       for (let i = 0; i < q.items.length; i++) {
         im.setMatrixAt(i, q.items[i].m);
         im.setColorAt(i, q.items[i].c);
@@ -299,9 +333,28 @@ export class KingdomDressing {
       im.instanceMatrix.needsUpdate = true;
       if (im.instanceColor) im.instanceColor.needsUpdate = true;
       // The geode's contents hang off their own group so they cull as a unit.
-      (key.startsWith('geode') ? this.geodeGroup : this.group).add(im);
+      (q.name.startsWith('geode') ? this.geodeGroup : this.group).add(im);
       this.drawCalls++;
       this.tris += q.tris * q.items.length;
+
+      // Bucketed scatter (plants, shards, rubble) gets a distance cull. The fog
+      // at this zone's density leaves ~9% of a surface visible at 450 m, so
+      // dropping a bucket whose nearest instance is past that is free.
+      if (key.split('|')[1] !== '') {
+        let cx = 0;
+        let cz = 0;
+        for (const it of q.items) {
+          cx += it.m.elements[12];
+          cz += it.m.elements[14];
+        }
+        cx /= q.items.length;
+        cz /= q.items.length;
+        let r = 0;
+        for (const it of q.items) {
+          r = Math.max(r, Math.hypot(it.m.elements[12] - cx, it.m.elements[14] - cz));
+        }
+        this.scatter.push({ mesh: im, cx, cz, r });
+      }
     }
     this.queue.clear();
   }
@@ -334,10 +387,15 @@ export class KingdomDressing {
       bucket?: string;
       mat?: MeshStandardMaterial;
       color?: Color;
+      /** Emit box colliders and perches from this piece's reported stone. */
+      solid?: boolean;
+      /** Set false to collide a piece without seeding scatter on it. */
+      perches?: boolean;
     } = {},
   ): void {
     const m = new Matrix4();
-    const q = new Quaternion().setFromAxisAngle(UP, opts.yaw ?? rand() * Math.PI * 2);
+    const yaw = opts.yaw ?? rand() * Math.PI * 2;
+    const q = new Quaternion().setFromAxisAngle(UP, yaw);
     if (opts.tilt) {
       const lean = new Quaternion().setFromAxisAngle(
         opts.tiltAxis ?? new Vector3(1, 0, 0),
@@ -353,11 +411,66 @@ export class KingdomDressing {
     m.compose(new Vector3(x, y, z), q, s);
     const mat = opts.mat ?? this.stone;
     this.add(key, geo, mat, tris, m, opts.color ?? this.tintStone(SCRATCH_COLOR, rand), opts.bucket);
+    // Only for upright pieces at unit scale: a box collider cannot represent a
+    // tilted wall, and a scaled one would report the wrong thickness.
+    if (opts.solid && !opts.tilt && s.x === 1 && s.y === 1) {
+      this.emitSolids(geo, x, z, yaw, y, opts.perches !== false);
+    }
   }
 
   private triCount(geo: BufferGeometry): number {
     const idx = geo.index;
     return Math.round((idx ? idx.count : (geo.attributes.position as { count: number }).count) / 3);
+  }
+
+  /**
+   * Height of a geometry above its own base, at scale 1. Cached.
+   *
+   * Perches have to be placed at a piece's REAL top. Estimating it (a rock of
+   * size s is "about s*0.5 tall") is where the floating crystal came from: the
+   * generators normalise on the horizontal axes, so a rock's height is whatever
+   * its seed produced and the guess was out by metres on the tall ones.
+   */
+  private unitHeight(geo: BufferGeometry): number {
+    let h = UNIT_HEIGHT.get(geo.uuid);
+    if (h === undefined) {
+      geo.computeBoundingBox();
+      h = geo.boundingBox ? geo.boundingBox.max.y : 1;
+      UNIT_HEIGHT.set(geo.uuid, h);
+    }
+    return h;
+  }
+
+  /**
+   * Scatter one loose rock or slab, and register the perch at its measured top.
+   * Anything big enough to swim into also gets a collider — the player should
+   * never pass through something they would obviously bump.
+   */
+  private putRock(
+    key: string,
+    geo: BufferGeometry,
+    tris: number,
+    x: number,
+    z: number,
+    size: number,
+    yScale: number,
+    rand: () => number,
+    sinkFrac: number,
+    perchChance: number,
+  ): void {
+    const ground = this.terrain.heightAt(x, z);
+    const yPlaced = ground - size * sinkFrac;
+    const top = yPlaced + this.unitHeight(geo) * size * yScale;
+    this.put(key, geo, tris, x, z, rand, {
+      scale: new Vector3(size, size * yScale, size),
+      y: yPlaced,
+      tilt: (rand() - 0.5) * 0.7,
+      bucket: this.quad(x, z),
+    });
+    if (size > 7) {
+      this.colliders.push({ x, z, r: size * 0.38, top });
+    }
+    if (rand() < perchChance) this.perch(x, top, z, Math.max(1.5, size * 0.3));
   }
 
   /** Register a generated geometry for disposal and return its triangle count. */
@@ -366,8 +479,162 @@ export class KingdomDressing {
     return this.triCount(geo);
   }
 
+  /**
+   * Where a geometry ends up once a placement matrix is applied to it.
+   *
+   * Colliders for modelled pieces have to be measured, not inferred. A model's
+   * proportions are whatever the artist exported, and the scalar a placement
+   * multiplies by only means something once you know which axis the model's
+   * length runs along. Transforming the bounding box answers that directly and
+   * cannot drift out of step with what gets drawn.
+   */
+  private worldExtent(
+    geo: BufferGeometry,
+    m: Matrix4,
+  ): { cx: number; cz: number; r: number; top: number; height: number } {
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      CORNER.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z);
+      CORNER.applyMatrix4(m);
+      if (CORNER.x < minX) minX = CORNER.x;
+      if (CORNER.x > maxX) maxX = CORNER.x;
+      if (CORNER.y < minY) minY = CORNER.y;
+      if (CORNER.y > maxY) maxY = CORNER.y;
+      if (CORNER.z < minZ) minZ = CORNER.z;
+      if (CORNER.z > maxZ) maxZ = CORNER.z;
+    }
+    return {
+      cx: (minX + maxX) / 2,
+      cz: (minZ + maxZ) / 2,
+      // A blade is a spike, not a cylinder, so sit just inside the box's
+      // footprint: the corners of an AABB round a tapering crystal are water.
+      r: Math.max(maxX - minX, maxZ - minZ) * 0.42,
+      top: maxY,
+      height: maxY - minY,
+    };
+  }
+
   private perch(x: number, y: number, z: number, size: number, n?: Vector3): void {
     this.perches.push({ x, y, z, size, n: n ? n.clone() : UP.clone() });
+  }
+
+  /**
+   * Turn a generated piece's reported stone into box colliders — and, from the
+   * same data, into perches.
+   *
+   * Deriving both from one source is the point. Collision that disagrees with
+   * the mesh lets you swim through a wall; perches that disagree with it leave
+   * bushes hanging in mid-air. The first pass had both bugs, from opposite
+   * causes: buildings had no colliders at all, and their perches were recorded
+   * at the building's CENTRE — which, in a roofless shell, is empty courtyard.
+   * Now a wall says where it survived, and that answer feeds the solid you bump
+   * into and the ledge things grow on.
+   */
+  private emitSolids(
+    geo: BufferGeometry,
+    wx: number,
+    wz: number,
+    worldYaw: number,
+    baseY: number,
+    withPerches = true,
+  ): void {
+    this.emitBoxSolids(geo, wx, wz, worldYaw, baseY);
+    const parts = partSolidsOf(geo);
+    if (!parts) return;
+    const cw = Math.cos(worldYaw);
+    const sw = Math.sin(worldYaw);
+
+    for (const p of parts) {
+      // The part's own origin, carried out of the piece's local frame.
+      const px = wx + p.dx * cw + p.dz * sw;
+      const pz = wz - p.dx * sw + p.dz * cw;
+      const yaw = worldYaw + p.yaw;
+      const cy = Math.cos(yaw);
+      const sy = Math.sin(yaw);
+
+      const { tops, length, thickness } = p.solid;
+      const n = tops.length;
+      let i = 0;
+      while (i < n) {
+        if (tops[i] < 1.2) {
+          i++;
+          continue;
+        }
+        // Extend the run only while the wall stays within a COURSE of this
+        // height. Each box is capped at its run's minimum — anything taller
+        // would be collision standing where no stone does, which reads as an
+        // invisible wall — so a loose tolerance leaves the top of every rising
+        // run uncollidable. At 5 m (a third of a building's height) that was
+        // barely half the masonry; at 1.5 m the boxes follow the ruin line.
+        let j = i;
+        let lo = tops[i];
+        while (j + 1 < n && tops[j + 1] >= 1.2 && Math.abs(tops[j + 1] - lo) < 1.5) {
+          j++;
+          lo = Math.min(lo, tops[j]);
+        }
+        const u0 = Math.max(0, (i - 0.5) / (n - 1));
+        const u1 = Math.min(1, (j + 0.5) / (n - 1));
+        const segLen = (u1 - u0) * length;
+        if (segLen > 0.5) {
+          // Centre of the run, along the wall's local X.
+          const mid = ((u0 + u1) / 2 - 0.5) * length;
+          const bx = px + mid * cy;
+          const bz = pz - mid * sy;
+          this.boxes.push({
+            x: bx,
+            z: bz,
+            hw: segLen / 2,
+            hd: thickness / 2,
+            yaw,
+            // The run's LOWEST surviving point, so the collider never stands
+            // taller than the stone does anywhere along it — you can always
+            // swim over a wall exactly where it has fallen.
+            top: baseY + lo,
+            bottom: baseY - 6,
+          });
+          if (withPerches) {
+            this.perch(bx, baseY + lo, bz, Math.min(segLen * 0.4, 4.5));
+          }
+        }
+        i = j + 1;
+      }
+    }
+  }
+
+  /**
+   * Carry a generator's reported blocks out of its local frame into world
+   * colliders. Blocks are already upright, so the placement's yaw is the box's
+   * yaw and the transform is a plain rotation of the offset.
+   */
+  private emitBoxSolids(
+    geo: BufferGeometry,
+    wx: number,
+    wz: number,
+    worldYaw: number,
+    baseY: number,
+  ): void {
+    const blocks = boxSolidsOf(geo);
+    if (!blocks) return;
+    const c = Math.cos(worldYaw);
+    const s = Math.sin(worldYaw);
+    for (const b of blocks) {
+      this.boxes.push({
+        x: wx + b.dx * c + b.dz * s,
+        z: wz - b.dx * s + b.dz * c,
+        hw: b.hw,
+        hd: b.hd,
+        yaw: worldYaw,
+        top: baseY + b.dy + b.hh,
+        bottom: baseY + b.dy - b.hh,
+      });
+    }
   }
 
   // ---- the citadel ----------------------------------------------------------
@@ -403,7 +670,21 @@ export class KingdomDressing {
       courseHeight: 2.75,
     });
     const platTris = this.own(platGeo);
-    this.put('citadel-stylobate', platGeo, platTris, 0, 0, rand, { yaw: 0, y: baseY - 4 });
+    // SOLID. This was the one piece of the city deliberately left uncollided,
+    // on the reasoning that a 162 x 126 m block spanning the whole hall would
+    // shove you sideways off the citadel when you stood on it. That was true of
+    // a horizontal-only resolve, and it made the exact centre of the map — the
+    // floor of the great hall, the first ground you see when you fall through
+    // the breach — something you sank straight through. Solids now resolves the
+    // vertical axis too, so the platform reads as a floor and the objection is
+    // gone. No perches: the hall's dressing is placed deliberately, and a slab
+    // this size would otherwise seed scatter across the whole throne room.
+    this.put('citadel-stylobate', platGeo, platTris, 0, 0, rand, {
+      yaw: 0,
+      y: baseY - 4,
+      solid: true,
+      perches: false,
+    });
 
     // --- the colonnade -------------------------------------------------------
     const spots: { x: number; z: number }[] = [];
@@ -450,7 +731,7 @@ export class KingdomDressing {
         const top = y + segH * 2;
         standing.push({ x: s.x, z: s.z, top });
         this.colliders.push({ x: s.x, z: s.z, r: COL_W * 0.46, top });
-        this.perch(s.x, top, s.z, 9);
+        this.perch(s.x, top, s.z, 5);
       } else if (fate === 'snapped') {
         this.put('citadel-column', shaft.geometry, shaft.tris, s.x, s.z, rand, {
           scale: COL_W,
@@ -458,7 +739,7 @@ export class KingdomDressing {
           yaw: rand() * Math.PI * 2,
         });
         this.colliders.push({ x: s.x, z: s.z, r: COL_W * 0.46, top: y + segH });
-        this.perch(s.x, y + segH, s.z, 11);
+        this.perch(s.x, y + segH, s.z, 5);
         // The rest of it lying where it came down.
         this.scatterDrums(s.x, s.z, COL_W * 0.5, 3, rand, y);
       } else {
@@ -508,7 +789,7 @@ export class KingdomDressing {
         r: 12,
         top: baseY + screen.unitHeight * s,
       });
-      this.perch(-HALF_X - 16, baseY + screen.unitHeight * s * 0.9, 0, 14);
+      this.perch(-HALF_X - 16, baseY + screen.unitHeight * s * 0.9, 0, 4);
     }
     const screen2 = castle.get('Object_60');
     if (screen2) {
@@ -540,8 +821,28 @@ export class KingdomDressing {
         y: baseY + 1.5 + i * 2.4,
       });
     }
-    this.perch(0, baseY + 11, 0, 30);
-    this.colliders.push({ x: 0, z: 0, r: 16, top: baseY + 64 });
+    this.perch(0, baseY + 11, 0, 8);
+    // The throne is solid, and generously so. The crystal is 82 m across; a
+    // single cylinder at its full half-width would wall off the hall, but at
+    // 21 m you could swim clean through the blades you can plainly see. Three
+    // overlapping cylinders trace the cluster's actual footprint: a wide low
+    // skirt for the splayed base, and a tall narrow core for the tallest spire.
+    // Discs traced from the cluster's MEASURED radius at each height: it runs
+    // 26 m at the foot, bulges to 42 m around +25, tapers through 36 m, and
+    // finishes as a 15 m spire at +86. The three discs this replaces were built
+    // by eye and were up to 17 m too narrow through the bulge, which is most of
+    // the crystal's visible mass — and stopped 10 m below the actual tip.
+    //
+    // A cylinder has no underside, so the profile has to descend monotonically
+    // or a wide disc high up hangs an invisible column beneath it. That caps the
+    // bulge slightly under its true 42 m; what escapes is the tips of the
+    // outermost blades, which are thin spikes, and the same judgement the shard
+    // field makes.
+    this.colliders.push({ x: 0, z: 0, r: 32, top: baseY + 26 });
+    this.colliders.push({ x: 0, z: 0, r: 30, top: baseY + 40 });
+    this.colliders.push({ x: 0, z: 0, r: 26, top: baseY + 54 });
+    this.colliders.push({ x: -2, z: 2, r: 19, top: baseY + 66 });
+    this.colliders.push({ x: -3, z: 4, r: 15, top: baseY + 88 });
   }
 
   /** A line of fallen drums, as a column comes down and rolls. */
@@ -573,7 +874,12 @@ export class KingdomDressing {
         tilt: (rand() - 0.5) * 0.5,
         bucket: this.quad(px, pz),
       });
-      if (rand() < 0.35) this.perch(px, y + radius, pz, 5);
+      // A drum is an 8 m block of stone lying in the street. `put` cannot emit
+      // a solid for it — it is tilted, so no wall profile applies — but it is
+      // far too big to swim through. makeDrum lays a cylinder on its side and
+      // rests it on y=0, so it stands two radii tall.
+      this.colliders.push({ x: px, z: pz, r: radius * 1.05, top: y + radius * 1.7 });
+      if (rand() < 0.35) this.perch(px, y + radius, pz, radius * 1.4);
     }
   }
 
@@ -607,6 +913,8 @@ export class KingdomDressing {
       this.put('grand-stair', geo, tris, x, 0, rand, {
         yaw: -Math.PI / 2,
         y: y - 1,
+        solid: true,
+        perches: false,
       });
       x -= steps * run;
       y += steps * rise;
@@ -622,7 +930,7 @@ export class KingdomDressing {
           });
           const px = x - 5;
           const pz = side * 26;
-          this.put('stair-guardian', g, this.own(g), px, pz, rand, { y: y - 1, yaw: rand() * 0.3 });
+          this.put('stair-guardian', g, this.own(g), px, pz, rand, { y: y - 1, yaw: rand() * 0.3, solid: true });
           this.perch(px, y + 10, pz, 8);
         }
         x -= 6;
@@ -659,6 +967,17 @@ export class KingdomDressing {
       return g;
     };
 
+    const kerbs = [0, 1, 2, 3].map((i) => {
+      const geo = makeWall(6400 + i, {
+        length: SPACING * 0.92,
+        height: 2.2,
+        thickness: 3,
+        ruin: 0.2 + i * 0.14,
+        courseHeight: 2.2,
+      });
+      return { geo, tris: this.own(geo) };
+    });
+
     for (let x = a.outerX + 26; x <= a.innerX; x += SPACING) {
       // 0 at the gate, 1 at the citadel.
       const t = (x - a.outerX) / (a.innerX - a.outerX);
@@ -693,18 +1012,15 @@ export class KingdomDressing {
       }
 
       // Kerbs: low blocks marking the road's edge. Cheap, and they do more for
-      // the "this is a street" read than anything else on the avenue.
+      // the "this is a street" read than anything else on the avenue. Drawn
+      // from a small fixed set of variants rather than generated per placement —
+      // now that geometry identity is part of the instancing key, a fresh
+      // geometry every time would mean one draw call per kerb.
       for (const side of [-1, 1]) {
         const z = side * (a.halfWidth + 1.5);
         if (rand() < 0.22) continue;
-        const g = makeWall(6400 + Math.round(x), {
-          length: SPACING * 0.92,
-          height: 2.2,
-          thickness: 3,
-          ruin: 0.45 - t * 0.3,
-          courseHeight: 2.2,
-        });
-        this.put('avenue-kerb', g, this.own(g), x, z, rand, {
+        const kv = kerbs[Math.floor(rand() * kerbs.length)];
+        this.put('avenue-kerb', kv.geo, kv.tris, x, z, rand, {
           yaw: 0,
           y: this.terrain.heightAt(x, z) - 0.6,
           bucket: this.quad(x, z),
@@ -735,7 +1051,7 @@ export class KingdomDressing {
           top: this.terrain.heightAt(x, 0) + 26,
         });
       }
-      this.perch(x, this.terrain.heightAt(x, 0) + 26 + a.halfWidth, 0, 10);
+      this.perch(x, this.terrain.heightAt(x, 0) + 26 + a.halfWidth, 0, 4);
     }
 
     // A statue base at the head of the avenue, its statue long gone.
@@ -766,10 +1082,9 @@ export class KingdomDressing {
       const ground = this.terrain.heightAt(gx, z);
       const geo = makeTower(7400 + (side > 0 ? 1 : 0), 34, 58, side > 0 ? 0.22 : 0.44);
       const tris = this.own(geo);
-      this.put('gate-tower', geo, tris, gx, z, rand, { y: ground - 2, yaw: 0 });
-      this.colliders.push({ x: gx, z, r: 20, top: ground + 58 });
-      this.perch(gx, ground + 52, z, 16);
-      this.perch(gx + 17, ground + 26, z, 10, new Vector3(1, 0.3, 0).normalize());
+      this.put('gate-tower', geo, tris, gx, z, rand, { y: ground - 2, yaw: 0, solid: true });
+      // No cylinder and no hand-placed perches: `solid` already gave this tower
+      // a box per surviving wall run, and a perch on top of each.
     }
 
     // The gateway itself: a big arch spanning the road, most of one haunch gone.
@@ -781,10 +1096,14 @@ export class KingdomDressing {
       ruin: 0.38,
     });
     const tris = this.own(geo);
-    this.put('gate-arch', geo, tris, gx, 0, rand, {
-      yaw: Math.PI / 2,
-      y: this.terrain.heightAt(gx, 0) - 2,
-    });
+    const archY = this.terrain.heightAt(gx, 0) - 2;
+    this.put('gate-arch', geo, tris, gx, 0, rand, { yaw: Math.PI / 2, y: archY });
+    // Its two piers are solid; the span overhead is not, so you swim under it.
+    for (const side of [-1, 1]) {
+      const pz = side * (halfW + 10);
+      this.colliders.push({ x: gx, z: pz, r: 7, top: archY + 34 });
+      this.perch(gx, archY + 34, pz, 6);
+    }
 
     // The rubble of what fell out of it, spilling down the road.
     const rubbleGeo = makeRubble(7600, 1);
@@ -867,14 +1186,17 @@ export class KingdomDressing {
       // Right at the lip of the collapse the wall is barely there.
       const nearGeode = 1 - Math.min(1, (dGeode - geodeArc) / 0.4);
       const v = variants[Math.min(5, Math.floor(rand() * 4) + Math.floor(nearGeode * 3))];
-      const bucket = this.quad(x, z);
+      // (scatter below still buckets; the wall itself does not — see above)
 
+      // Not bucketed by quadrant. Geometry identity already splits these six
+      // variants into six draws; splitting again by quadrant makes twenty-four
+      // draws of under two instances each, and a ring that circles the map is
+      // partly on screen from almost everywhere, so the culling never pays.
       this.put('curtain-wall', v.geo, v.tris, x, z, rand, {
         yaw: tangentYaw(a),
         y: ground - 3,
-        bucket,
+        solid: true,
       });
-      this.perch(x, ground + 24, z, 8, new Vector3(Math.cos(a), 0.4, Math.sin(a)).normalize());
 
       // Towers at regular intervals, as a real curtain has.
       if (i % 6 === 2 && nearGeode < 0.2) {
@@ -882,29 +1204,21 @@ export class KingdomDressing {
         this.put('curtain-tower', t.geo, t.tris, x, z, rand, {
           yaw: tangentYaw(a),
           y: ground - 3,
-          bucket,
+          solid: true,
         });
-        this.colliders.push({ x, z, r: 16, top: ground + 44 });
-        this.perch(x, ground + 44, z, 12);
       }
     }
 
     // The rubble fan where the wall slid into the collapse.
     const rubbleGeo = makeRubble(8500, 1);
     const rTris = this.own(rubbleGeo);
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0, N = this.n(60); i < N; i++) {
       const a = geodeAngle + (rand() - 0.5) * geodeArc * 2.4;
       const r = R * (0.7 + rand() * 0.42);
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       const s = 3 + rand() * rand() * 16;
-      this.put('wall-rubble', rubbleGeo, rTris, x, z, rand, {
-        scale: new Vector3(s, s * (0.45 + rand() * 0.7), s),
-        sink: s * 0.22,
-        tilt: (rand() - 0.5) * 0.8,
-        bucket: this.quad(x, z),
-      });
-      if (rand() < 0.3) this.perch(x, this.terrain.heightAt(x, z) + s * 0.6, z, 5);
+      this.putRock('wall-rubble', rubbleGeo, rTris, x, z, s, 0.45 + rand() * 0.7, rand, 0.22, 0.3);
     }
   }
 
@@ -927,19 +1241,19 @@ export class KingdomDressing {
   private buildLowerTown(): void {
     const rand = mulberry32(9210);
     const variants: { geo: BufferGeometry; tris: number; w: number; d: number; h: number }[] = [];
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 7; i++) {
       // Tall enough to be BUILDINGS. At 9-22 m with heavy ruin the surviving
       // walls were 4-17 m, and from anywhere above the terraces the district
       // read as a plan of foundations scratched on the ground rather than as a
       // town you could lose a shark in.
-      const w = 15 + (i % 4) * 7 + rand() * 4;
-      const d = 13 + (i % 3) * 8 + rand() * 4;
+      const w = 14 + (i % 4) * 5 + rand() * 3;
+      const d = 12 + (i % 3) * 6 + rand() * 3;
       const h = 15 + (i % 5) * 5;
       const geo = makeBuilding(9300 + i, {
         width: w,
         depth: d,
         height: h,
-        ruin: 0.2 + (i / 11) * 0.42,
+        ruin: 0.2 + (i / 7) * 0.42,
         collapsedCorner: i % 3 === 0,
         rooms: w > 22,
       });
@@ -962,12 +1276,17 @@ export class KingdomDressing {
         const a0 = b * blockArc + 0.06;
         const a1 = (b + 1) * blockArc - 0.06; // the gap between them is a street
         const along = (a1 - a0) * band.r;
-        const perBlock = Math.max(1, Math.floor((along / 26) * band.fill));
+        // Pitch has to exceed the largest building, or neighbours interpenetrate
+        // and — invisibly, until you try to swim in — every shell's interior
+        // fills with the walls of the house next door. Measured at a 26 m pitch
+        // against buildings up to 40 m across: 73 of 113 interiors were sealed.
+        const PITCH = 32;
+        const perBlock = Math.max(1, Math.floor((along / PITCH) * band.fill));
         for (let k = 0; k < perBlock; k++) {
           for (let row = 0; row < band.rows; row++) {
             if (rand() > band.fill) continue;
             const a = a0 + ((k + 0.5) / perBlock) * (a1 - a0);
-            const r = band.r + (row - (band.rows - 1) / 2) * 26 + (rand() - 0.5) * 5;
+            const r = band.r + (row - (band.rows - 1) / 2) * PITCH + (rand() - 0.5) * 4;
             const x = Math.cos(a) * r;
             const z = Math.sin(a) * r;
             // Never in the road, never in the hole.
@@ -977,22 +1296,16 @@ export class KingdomDressing {
 
             const v = variants[Math.floor(rand() * variants.length)];
             const ground = this.terrain.heightAt(x, z);
+            // `solid` puts a collider on every surviving run of wall and a
+            // perch on top of it, so the shell is something you weave through
+            // rather than swim past, and what grows on it grows on the STONE.
             this.put('town-house', v.geo, v.tris, x, z, rand, {
               // Aligned to the street, with only a degree or two of slop.
               yaw: tangentYaw(a) + (rand() - 0.5) * 0.12,
               y: ground - 1.5,
               bucket: this.quad(x, z),
+              solid: true,
             });
-            // Wall tops are where crystal and weed take hold.
-            this.perch(x, ground + v.h * 0.85, z, 5 + rand() * 4);
-            if (rand() < 0.4) {
-              this.perch(
-                x + (rand() - 0.5) * v.w,
-                ground + v.h * 0.5,
-                z + (rand() - 0.5) * v.d,
-                4,
-              );
-            }
           }
         }
       }
@@ -1004,7 +1317,7 @@ export class KingdomDressing {
     const rTris = this.own(rubbleGeo);
     const slabGeo = makeSlab(9510);
     const sTris = this.own(slabGeo);
-    for (let i = 0; i < 220; i++) {
+    for (let i = 0, N = this.n(220); i < N; i++) {
       const a = rand() * Math.PI * 2;
       const r = KINGDOM.acropolis.r + rand() * (KINGDOM.wallR - KINGDOM.acropolis.r);
       const x = Math.cos(a) * r;
@@ -1013,13 +1326,18 @@ export class KingdomDressing {
       if (avenueMask(x, z) > 0.4) continue;
       const s = 1.6 + rand() * rand() * 12;
       const slab = rand() < 0.3;
-      this.put(slab ? 'town-slab' : 'town-rubble', slab ? slabGeo : rubbleGeo, slab ? sTris : rTris, x, z, rand, {
-        scale: new Vector3(s, s * (slab ? 0.5 + rand() * 0.9 : 0.45 + rand() * 0.7), s),
-        sink: s * 0.2,
-        tilt: (rand() - 0.5) * (slab ? 0.5 : 0.8),
-        bucket: this.quad(x, z),
-      });
-      if (rand() < 0.22) this.perch(x, this.terrain.heightAt(x, z) + s * 0.5, z, 4);
+      this.putRock(
+        slab ? 'town-slab' : 'town-rubble',
+        slab ? slabGeo : rubbleGeo,
+        slab ? sTris : rTris,
+        x,
+        z,
+        s,
+        slab ? 0.5 + rand() * 0.9 : 0.45 + rand() * 0.7,
+        rand,
+        0.2,
+        0.22,
+      );
     }
   }
 
@@ -1067,7 +1385,7 @@ export class KingdomDressing {
         tilt: 0.18 + rand() * 0.4,
         tiltAxis: new Vector3(1, 0, 0),
       });
-      this.perch(x, ground + v.h * 0.7, z, 7);
+      this.perch(x, ground + 2, z, 4);
     }
 
     // A tower that went in whole and is now lying on its side at the bottom.
@@ -1076,13 +1394,26 @@ export class KingdomDressing {
       const tris = this.own(geo);
       const x = g.x - 54;
       const z = g.z + 40;
+      const ty = this.terrain.heightAt(x, z);
       this.put('geode-tower', geo, tris, x, z, rand, {
-        y: this.terrain.heightAt(x, z) + 22,
+        y: ty + 22,
         yaw: 1.1,
         tilt: 1.42, // very nearly flat on its face
         tiltAxis: new Vector3(1, 0, 0),
       });
-      this.perch(x, this.terrain.heightAt(x, z) + 14, z, 14);
+      // Tipped past a right angle, so no wall profile describes it — but it is
+      // a 52 m tower lying across the basin floor and the single largest thing
+      // down there. One box along its length, hand-placed.
+      this.boxes.push({
+        x,
+        z,
+        hw: 26,
+        hd: 12,
+        yaw: 1.1,
+        top: ty + 24,
+        bottom: ty - 2,
+      });
+      this.perch(x, ty + 14, z, 6);
     }
 
     // The cathedral itself: the pack's great arches, half-drowned in the shards.
@@ -1102,7 +1433,7 @@ export class KingdomDressing {
           tiltAxis: new Vector3(0, 0, 1),
         });
         this.colliders.push({ x, z, r: 10, top: this.terrain.heightAt(x, z) + arch.unitHeight * s });
-        this.perch(x, this.terrain.heightAt(x, z) + arch.unitHeight * s * 0.5, z, 16);
+        this.perch(x, this.terrain.heightAt(x, z) + arch.unitHeight * s * 0.5, z, 5);
       }
     }
 
@@ -1131,7 +1462,7 @@ export class KingdomDressing {
         this.colliders.push({
           x,
           z,
-          r: height * 0.2,
+          r: height * 0.3,
           top: this.terrain.heightAt(x, z) + height * 0.7,
         });
         this.perch(x, this.terrain.heightAt(x, z) + height * 0.2, z, 12);
@@ -1153,7 +1484,7 @@ export class KingdomDressing {
     const slabGeo = makeSlab(11410);
     const sTris = this.own(slabGeo);
 
-    for (let i = 0; i < 260; i++) {
+    for (let i = 0, N = this.n(260); i < N; i++) {
       const a = rand() * Math.PI * 2;
       const r = KINGDOM.wallR + 12 + rand() * 46;
       const x = Math.cos(a) * r;
@@ -1161,16 +1492,18 @@ export class KingdomDressing {
       if (Math.abs(x) > KINGDOM.maxX - 30 || Math.abs(z) > KINGDOM.maxZ - 30) continue;
       const slab = rand() < 0.42;
       const s = 3 + rand() * rand() * 26;
-      this.put(slab ? 'outer-slab' : 'outer-rubble', slab ? slabGeo : rubbleGeo, slab ? sTris : rTris, x, z, rand, {
-        scale: new Vector3(s, s * (slab ? 0.6 + rand() * 1.4 : 0.5 + rand() * 0.8), s),
-        sink: s * 0.18,
-        tilt: (rand() - 0.5) * 0.6,
-        bucket: this.quad(x, z),
-      });
-      if (s > 14) {
-        this.colliders.push({ x, z, r: s * 0.4, top: this.terrain.heightAt(x, z) + s * 0.7 });
-      }
-      if (rand() < 0.3) this.perch(x, this.terrain.heightAt(x, z) + s * 0.55, z, 5);
+      this.putRock(
+        slab ? 'outer-slab' : 'outer-rubble',
+        slab ? slabGeo : rubbleGeo,
+        slab ? sTris : rTris,
+        x,
+        z,
+        s,
+        slab ? 0.6 + rand() * 1.4 : 0.5 + rand() * 0.8,
+        rand,
+        0.18,
+        0.3,
+      );
     }
 
     // A few outbuildings, farmsteads that never made it inside the wall.
@@ -1194,8 +1527,8 @@ export class KingdomDressing {
         yaw: rand() * Math.PI * 2,
         y: ground - 1.5,
         bucket: this.quad(x, z),
+        solid: true,
       });
-      this.perch(x, ground + 8, z, 5);
     }
   }
 
@@ -1223,7 +1556,7 @@ export class KingdomDressing {
 
     // --- bursts on the city's own ruins --------------------------------------
     for (const perch of this.perches) {
-      if (rand() > 0.72) continue;
+      if (rand() > 0.72 * this.density) continue;
       const inGeode = Math.hypot(perch.x - g.x, perch.z - g.z) < g.r;
       const n = Math.round((3 + rand() * 7) * (inGeode ? 1.9 : 1));
       this.burst(shards, spears, perch, n, perch.size * (inGeode ? 1.5 : 1), rand, inGeode);
@@ -1232,7 +1565,7 @@ export class KingdomDressing {
     // --- bursts straight out of the ground -----------------------------------
     // Density is driven by distance from the geode: the mineral is welling up
     // from there, so the city is progressively more infested as you move east.
-    for (let i = 0; i < 900; i++) {
+    for (let i = 0, N = this.n(900); i < N; i++) {
       const x = KINGDOM.minX + 40 + rand() * (KINGDOM.maxX - KINGDOM.minX - 80);
       const z = KINGDOM.minZ + 40 + rand() * (KINGDOM.maxZ - KINGDOM.minZ - 80);
       const gd = Math.hypot(x - g.x, z - g.z);
@@ -1296,7 +1629,16 @@ export class KingdomDressing {
           color: crystalTint(rand, 0.9),
           bucket: this.quad(x, z),
         });
-        this.colliders.push({ x, z, r: s * 0.22, top: y + big.unitHeight * s * 0.7 });
+        // Sized from the model's own proportions plus what the lean throws
+        // sideways, not from a flat fraction of the scale: a hand-picked 0.3
+        // was under the crystal's real half-width and stopped well short of
+        // its tip, so a third of each landmark was swimmable.
+        this.colliders.push({
+          x,
+          z,
+          r: s * (Math.max(big.unitWidth, big.unitDepth) * 0.42 + big.unitHeight * 0.16),
+          top: y + big.unitHeight * s * 0.84,
+        });
       }
     }
   }
@@ -1345,10 +1687,15 @@ export class KingdomDressing {
       const len = size * (1 - t * 0.5) * (0.45 + rand() * 0.8) * (1 - spread * 0.28);
       if (len < 0.5) continue;
 
-      // Prefer the fat medium-poly spears for the few biggest blades in a rich
-      // burst; the 52-triangle shards do everything else, which is what makes
-      // thousands of these affordable.
-      const useSpear = rich && spears.length > 0 && i < 2 && len > size * 0.5;
+      // Prefer the fat medium-poly spears for the single biggest blade in a
+      // rich burst; the 52-triangle shards do everything else, which is what
+      // makes thousands of these affordable. The cap matters: a spear is 1,854
+      // triangles against a shard's 52, so at two per burst they were 330k
+      // triangles — more than the entire town — for an accent you read as
+      // "a slightly chunkier crystal".
+      const useSpear =
+        rich && spears.length > 0 && i === 0 && len > size * 0.6 && this.spearCount < 90;
+      if (useSpear) this.spearCount++;
       const piece = useSpear
         ? spears[Math.floor(rand() * spears.length)]
         : shards[Math.floor(rand() * shards.length)];
@@ -1364,6 +1711,25 @@ export class KingdomDressing {
       if (useSpear) q.multiply(SPEAR_UPRIGHT);
       scl.set(s * (0.8 + rand() * 0.5), s, s * (0.8 + rand() * 0.5));
       m.compose(pos, q, scl);
+
+      // Blades big enough to swim into get a collider. Splinters deliberately
+      // do not: a shard field is thousands of pieces, and making every one
+      // solid would turn swimming through a geode into wading through gravel
+      // while costing more than the whole rest of the zone's collision.
+      //
+      // The collider is measured off the matrix that actually draws the blade,
+      // never derived from `len`. Those two numbers are not the same thing and
+      // the difference was invisible: the spear models lie along their local X,
+      // so `piece.unitHeight` measures their THICKNESS, and `s = len /
+      // unitHeight` inflates them roughly fivefold. The blades you can see are
+      // 10-34 m tall while the colliders built from `len` were 2-7 m — three
+      // quarters of every big crystal in the zone was empty water.
+      if (spread < 0.55) {
+        const ext = this.worldExtent(piece.geometry, m);
+        if (ext.height > 7) {
+          this.colliders.push({ x: ext.cx, z: ext.cz, r: ext.r, top: ext.top });
+        }
+      }
       this.add(
         useSpear ? 'crystal-spear' : `crystal-shard${shards.indexOf(piece)}`,
         piece.geometry,
@@ -1411,15 +1777,23 @@ export class KingdomDressing {
       { url: seaweed2Url, seed: 2004, onPerch: 120, ground: 180, small: [2.5, 8], big: [12, 20], bigChance: 0.07 },
       { url: lowPolyPlantUrl, seed: 2005, onPerch: 80, ground: 130, small: [2, 5], big: [7, 12], bigChance: 0.05 },
       { url: lowPolyShrubUrl, seed: 2006, onPerch: 110, ground: 160, small: [1.5, 4.5], big: [6, 11], bigChance: 0.07 },
-      { url: coral2Url, seed: 2007, onPerch: 70, ground: 100, small: [2.5, 7], big: [10, 17], bigChance: 0.1 },
-      // Mid cost.
-      { url: marinePlantUrl, seed: 2008, onPerch: 22, ground: 34, small: [3, 8], big: [11, 18], bigChance: 0.15 },
-      // Expensive accents: single figures, deliberately.
-      { url: lowpolyCoralUrl, seed: 2009, onPerch: 7, ground: 11, small: [5, 11], big: [15, 24], bigChance: 0.3 },
+      { url: coral2Url, seed: 2007, onPerch: 50, ground: 74, small: [2.5, 7], big: [10, 17], bigChance: 0.1 },
+      //
+      // Everything below is a HEAVY model, and the counts are set by triangle
+      // budget rather than by taste. Measured: these four species were 82 plants
+      // out of 2,246 and half the entire vegetation cost — 519k of 1,085k
+      // triangles. Cheap species buy density; expensive ones buy a silhouette,
+      // and you only need a few silhouettes.
+      //
+      // Mid cost (3.0k each).
+      { url: marinePlantUrl, seed: 2008, onPerch: 9, ground: 13, small: [3, 8], big: [11, 18], bigChance: 0.15 },
+      // Expensive accents (7.7k each): single figures, deliberately.
+      { url: lowpolyCoralUrl, seed: 2009, onPerch: 3, ground: 5, small: [5, 11], big: [15, 24], bigChance: 0.35 },
       { url: coralPieceUrl, seed: 2010, onPerch: 6, ground: 9, small: [5, 10], big: [14, 22], bigChance: 0.3 },
-      // The lamps: eight in the whole city, genuinely huge, and the only weed
-      // allowed to compete with the architecture.
-      { url: luminescentUrl, seed: 2011, onPerch: 4, ground: 4, small: [22, 32], big: [40, 56], bigChance: 0.45, glow: true },
+      // The lamps (26k each — the most expensive model in the zone by 3x). Six
+      // in the whole city, genuinely huge, and the only weed allowed to compete
+      // with the architecture.
+      { url: luminescentUrl, seed: 2011, onPerch: 3, ground: 3, small: [22, 32], big: [40, 56], bigChance: 0.5, glow: true },
     ];
 
     await Promise.all(
@@ -1498,6 +1872,7 @@ export class KingdomDressing {
     const scl = new Vector3();
     const p = new Vector3();
     const c = new Color();
+    const bucketed = spec.onPerch + spec.ground > 100;
 
     const put = (x: number, y: number, z: number, forceBig = false): void => {
       if (Math.abs(x) > KINGDOM.maxX - 30 || Math.abs(z) > KINGDOM.maxZ - 30) return;
@@ -1513,29 +1888,41 @@ export class KingdomDressing {
       // blue-green the rest of the zone is lit in.
       const v = 0.3 + rand() * 0.6;
       c.setRGB(v * 0.5, v * 0.8, v * 0.72);
-      this.add(`plant${spec.seed}`, geo, mat, triPer, m, c, this.quad(x, z));
+      // Quadrant buckets exist so a species spread across the map can frustum
+      // cull. Below ~100 instances that trade is backwards: four draw calls of
+      // fifteen plants each cost more than one draw of sixty that is sometimes
+      // drawn needlessly.
+      this.add(`plant${spec.seed}`, geo, mat, triPer, m, c, bucketed ? this.quad(x, z) : '');
     };
 
     // Growing out of the ruins: the perches the city recorded.
-    for (let i = 0; i < spec.onPerch && this.perches.length > 0; i++) {
+    //
+    // The wander is capped hard. `size` doubles as a scale hint, so a big perch
+    // (a whole dais, a crystal's flank) used to scatter plants up to 15 m off
+    // the surface it named — which is exactly the "floating bushes" symptom.
+    // Anything that wants to be spread over an area registers several perches
+    // instead of one wide one.
+    for (let i = 0, N = this.n(spec.onPerch); i < N && this.perches.length > 0; i++) {
       const perch = this.perches[Math.floor(rand() * this.perches.length)];
+      const wander = Math.min(perch.size, 5) * 0.5;
       put(
-        perch.x + (rand() - 0.5) * perch.size,
+        perch.x + (rand() - 0.5) * wander,
         perch.y,
-        perch.z + (rand() - 0.5) * perch.size,
+        perch.z + (rand() - 0.5) * wander,
         rand() < 0.1,
       );
     }
 
     // And on the ground, in loose clumps rather than an even rash.
     let placed = 0;
-    for (let tries = 0; tries < spec.ground * 14 && placed < spec.ground; tries++) {
+    const groundN = this.n(spec.ground);
+    for (let tries = 0; tries < groundN * 14 && placed < groundN; tries++) {
       const cx = KINGDOM.minX + 50 + rand() * (KINGDOM.maxX - KINGDOM.minX - 100);
       const cz = KINGDOM.minZ + 50 + rand() * (KINGDOM.maxZ - KINGDOM.minZ - 100);
       if (this.terrain.slopeAt(cx, cz) > 2.2) continue;
       if (avenueMask(cx, cz) > 0.6) continue; // the road stayed swept
       const clump = 1 + Math.floor(rand() * 5);
-      for (let k = 0; k < clump && placed < spec.ground; k++) {
+      for (let k = 0; k < clump && placed < groundN; k++) {
         const x = cx + (rand() - 0.5) * 24;
         const z = cz + (rand() - 0.5) * 24;
         put(x, this.terrain.heightAt(x, z), z);
@@ -1555,6 +1942,13 @@ export class KingdomDressing {
     const g = KINGDOM.geode;
     const d = Math.hypot(camera.position.x - g.x, camera.position.z - g.z);
     this.geodeGroup.visible = d < g.r * 3.6;
+
+    const px = camera.position.x;
+    const pz = camera.position.z;
+    for (let i = 0; i < this.scatter.length; i++) {
+      const s = this.scatter[i];
+      s.mesh.visible = Math.hypot(px - s.cx, pz - s.cz) - s.r < FAR_SCATTER;
+    }
   }
 
   dispose(): void {
@@ -1565,12 +1959,18 @@ export class KingdomDressing {
     this.colliders.length = 0;
     this.perches.length = 0;
     DRUM_CACHE.clear();
+    UNIT_HEIGHT.clear();
   }
 }
 
 // ---- module-scope scratch --------------------------------------------------
 
+/** Beyond this, fog has eaten a scatter bucket and it stops being drawn. */
+const FAR_SCATTER = 470;
+
 const SCRATCH_COLOR = new Color();
+/** Measured height-above-base per geometry, so perches land on the real top. */
+const UNIT_HEIGHT = new Map<string, number>();
 const STONE_STAIN = new Color(0.4, 0.52, 0.62);
 /** Fallen drums are shared between every column of the same radius. */
 const DRUM_CACHE = new Map<string, BufferGeometry>();

@@ -1,6 +1,7 @@
 import { Euler, Vector3 } from 'three';
 import type { Input } from '../core/Input';
-import type { CylinderCollider, TerrainLike, Zone, ZoneBounds } from '../world/types';
+import type { TerrainLike, Zone, ZoneBounds } from '../world/types';
+import type { Solids } from '../world/Solids';
 import type { PlayerFish } from '../entities/PlayerFish';
 import type { PlayerCamera } from './PlayerCamera';
 import type { MovementDef } from '../data/species';
@@ -68,7 +69,7 @@ export class SwimController {
 
   // Zone-scoped references, swapped on descent via bindZone().
   private terrain: TerrainLike;
-  private colliders: CylinderCollider[];
+  private solids: Solids;
   private bounds: ZoneBounds;
 
   constructor(
@@ -76,13 +77,13 @@ export class SwimController {
     private readonly input: Input,
     private readonly camera: PlayerCamera,
     terrain: TerrainLike,
-    colliders: CylinderCollider[],
+    solids: Solids,
     bounds: ZoneBounds,
     spawn: Vector3,
     zone?: Zone,
   ) {
     this.terrain = terrain;
-    this.colliders = colliders;
+    this.solids = solids;
     this.bounds = bounds;
     this.zone = zone ?? null;
     this.placeAt(spawn);
@@ -165,13 +166,13 @@ export class SwimController {
   /** Rebind to a new zone after descent and reposition at its spawn. */
   bindZone(
     terrain: TerrainLike,
-    colliders: CylinderCollider[],
+    solids: Solids,
     bounds: ZoneBounds,
     spawn: Vector3,
     zone?: Zone,
   ): void {
     this.terrain = terrain;
-    this.colliders = colliders;
+    this.solids = solids;
     this.bounds = bounds;
     this.zone = zone ?? null;
     this.currentSpeed = 0;
@@ -298,6 +299,15 @@ export class SwimController {
       if (this.vel.y > 0) this.vel.y = 0;
     }
     this.collideSolidsAndBounds(radius, dt);
+    // Solids can now push vertically, so the floor gets the last word: a body
+    // ejected out of the underside of a slab must not end up inside the rock
+    // the slab is bedded into. Cheap, and it makes the two systems' order of
+    // resolution stop mattering.
+    const settled = this.terrain.heightAt(this.pos.x, this.pos.z) + radius;
+    if (this.pos.y < settled) {
+      this.pos.y = settled;
+      if (this.vel.y < 0) this.vel.y = 0;
+    }
 
     // --- orientation ---------------------------------------------------------
     const speedNow = this.vel.length();
@@ -367,28 +377,7 @@ export class SwimController {
 
   /** Shared solid-obstacle push-out + soft-box boundary clamp (swim + crawl). */
   private collideSolidsAndBounds(radius: number, dt: number): void {
-    for (const c of this.colliders) {
-      if (this.pos.y > c.top + radius) continue;
-      let dx = this.pos.x - c.x;
-      let dz = this.pos.z - c.z;
-      let d = Math.hypot(dx, dz);
-      if (d < 1e-4) {
-        dx = 1;
-        dz = 0;
-        d = 1;
-      }
-      const minD = c.r + radius;
-      if (d < minD) {
-        const push = (minD - d) / d;
-        this.pos.x += dx * push;
-        this.pos.z += dz * push;
-        const inward = (this.vel.x * dx + this.vel.z * dz) / (d * d);
-        if (inward < 0) {
-          this.vel.x -= dx * inward;
-          this.vel.z -= dz * inward;
-        }
-      }
-    }
+    this.solids.push(this.pos, this.vel, radius);
     const b = this.bounds;
     const m = b.softMargin;
     if (this.pos.x > b.maxX) {

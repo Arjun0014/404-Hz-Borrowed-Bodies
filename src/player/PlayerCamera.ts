@@ -1,6 +1,7 @@
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three';
 import type { Input } from '../core/Input';
-import type { CylinderCollider, TerrainLike } from '../world/types';
+import type { TerrainLike } from '../world/types';
+import type { Solids } from '../world/Solids';
 import type { CameraProfile } from '../data/species';
 import { WORLD } from '../config';
 
@@ -36,16 +37,16 @@ export class PlayerCamera {
 
   // Zone-scoped references, swapped on descent.
   private terrain: TerrainLike;
-  private colliders: CylinderCollider[];
+  private solids: Solids;
 
   constructor(
     private readonly input: Input,
     terrain: TerrainLike,
-    colliders: CylinderCollider[],
+    solids: Solids,
     aspect: number,
   ) {
     this.terrain = terrain;
-    this.colliders = colliders;
+    this.solids = solids;
     this.profile = { distanceFactor: 7, minDistance: 2.4, heightFactor: 2, baseFov: 60 };
     this.hostLength = 0.4;
     this.baseDist = this.computeBaseDist();
@@ -55,9 +56,9 @@ export class PlayerCamera {
   }
 
   /** Rebind to a new zone; the next update snaps to the new framing. */
-  bindZone(terrain: TerrainLike, colliders: CylinderCollider[]): void {
+  bindZone(terrain: TerrainLike, solids: Solids): void {
     this.terrain = terrain;
-    this.colliders = colliders;
+    this.solids = solids;
     this.initialized = false;
   }
 
@@ -160,14 +161,7 @@ export class PlayerCamera {
       const rock = this.terrain.ceilingAt?.(px, pz);
       const overhead = rock === undefined ? WORLD.surfaceY - 0.3 : rock - 0.6;
       let blocked = py < ground + 0.5 || py > overhead;
-      if (!blocked) {
-        for (const c of this.colliders) {
-          if (py < c.top + 0.3 && Math.hypot(px - c.x, pz - c.z) < c.r + 0.35) {
-            blocked = true;
-            break;
-          }
-        }
-      }
+      if (!blocked) blocked = this.solids.blocks(px, py, pz, 0.35);
       if (blocked) {
         usable = Math.max(this.profile.minDistance * 0.6, ((i - 1) * dist) / steps);
         break;

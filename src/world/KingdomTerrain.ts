@@ -373,7 +373,11 @@ export class KingdomTerrain implements TerrainLike {
    */
   private buildShell(kind: 'floor' | 'roof', maps?: TerrainMaps, _paving?: TerrainMaps): Mesh {
     const K = KINGDOM;
-    const segs = 216;
+    // The floor carries cut terraces, a ramp, and a crater rim, and needs every
+    // one of these quads. The roof is a smooth vault with one hole in it, so it
+    // gets barely half the resolution for a quarter of the triangles — 93k down
+    // to 25k, and there is no view in the zone where the difference is visible.
+    const segs = kind === 'roof' ? 112 : 216;
     const w = K.maxX - K.minX;
     const d = K.maxZ - K.minZ;
     const geo = new PlaneGeometry(w, d, segs, segs);

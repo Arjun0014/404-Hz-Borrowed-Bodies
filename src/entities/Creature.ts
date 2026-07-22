@@ -3,7 +3,8 @@ import type { CreatureSpecies } from '../data/creatures';
 import { EAT_SIZE_RATIO, FORAGER_HUNT_THRESHOLD, HUNT_THRESHOLD } from '../data/creatures';
 import { biteScaleAt, healthAt, lengthAt, lengthRatio } from '../data/growth';
 import type { CreatureInstance } from './CreatureFactory';
-import type { CylinderCollider, PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
+import type { PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
+import type { Solids } from '../world/Solids';
 
 /** A schooling fish steers toward its shoal's roaming centre (owned by Ecosystem). */
 export interface SchoolRef {
@@ -23,7 +24,7 @@ export interface EcoContext {
   /** >0 while the player is being aggressive nearby; prey flee it as a predator. */
   playerThreatT: number;
   terrain: TerrainLike;
-  colliders: CylinderCollider[];
+  solids: Solids;
   bounds: ZoneBounds;
   /** Horizontal habitat rectangle — the flat shelf, clear of walls and cliff. */
   habitat: PopulationArea;
@@ -584,21 +585,8 @@ export class Creature {
       _desired.y += urgency * 0.8;
     }
 
-    // Rock colliders: turn away from any we're heading into.
-    const cols = ctx.colliders;
-    for (let i = 0; i < cols.length; i++) {
-      const c = cols[i];
-      if (this.pos.y > c.top + this.radius + 2) continue;
-      const dx = this.pos.x - c.x;
-      const dz = this.pos.z - c.z;
-      const d = Math.hypot(dx, dz);
-      const avoidR = c.r + this.radius + 7;
-      if (d > 1e-3 && d < avoidR) {
-        const w = (avoidR - d) / (d * avoidR);
-        _desired.x += dx * w * 3.0;
-        _desired.z += dz * w * 3.0;
-      }
-    }
+    // Solid architecture and rock: turn away from anything we're heading into.
+    ctx.solids.avoid(this.pos, this.radius, 7, 3.0, _desired);
   }
 
   private crabThink(ctx: EcoContext, dt: number): void {
@@ -799,7 +787,7 @@ export class Creature {
       }
       this.pos.x += this.vel.x * dt;
       this.pos.z += this.vel.z * dt;
-      this.pushOffColliders(ctx.colliders);
+      this.pushOffColliders(ctx.solids);
       this.clampToHabitat(ctx.habitat);
       this.pos.y += (restY - this.pos.y) * Math.min(1, 8 * dt);
       this.vel.y = 0;
@@ -867,34 +855,12 @@ export class Creature {
       this.pos.y = ceil;
       if (this.vel.y > 0) this.vel.y = 0;
     }
-    this.pushOffColliders(ctx.colliders);
+    this.pushOffColliders(ctx.solids);
     this.clampToHabitat(ctx.habitat);
   }
 
-  private pushOffColliders(cols: CylinderCollider[]): void {
-    for (let i = 0; i < cols.length; i++) {
-      const c = cols[i];
-      if (this.pos.y > c.top + this.radius) continue;
-      let dx = this.pos.x - c.x;
-      let dz = this.pos.z - c.z;
-      let d = Math.hypot(dx, dz);
-      if (d < 1e-4) {
-        dx = 1;
-        dz = 0;
-        d = 1;
-      }
-      const minD = c.r + this.radius;
-      if (d < minD) {
-        const push = (minD - d) / d;
-        this.pos.x += dx * push;
-        this.pos.z += dz * push;
-        const inward = (this.vel.x * dx + this.vel.z * dz) / (d * d);
-        if (inward < 0) {
-          this.vel.x -= dx * inward;
-          this.vel.z -= dz * inward;
-        }
-      }
-    }
+  private pushOffColliders(solids: Solids): void {
+    solids.push(this.pos, this.vel, this.radius);
   }
 
   /** Keep fish on the flat shelf (habitat), never over the cliff or into walls. */

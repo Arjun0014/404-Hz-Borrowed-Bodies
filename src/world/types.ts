@@ -1,6 +1,7 @@
 import type { PerspectiveCamera, Texture, Vector3, WebGLRenderer } from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type { PopEntry } from '../data/creatures';
+import type { BoxCollider } from './Solids';
 
 /**
  * The slice of AssetLoader a zone needs for its dressing pass. Declared
@@ -87,6 +88,12 @@ export interface Zone {
   readonly displayName: string;
   readonly terrain: TerrainLike;
   readonly colliders: CylinderCollider[];
+  /**
+   * Rotated-box solids, for zones whose obstacles are walls rather than rocks.
+   * Optional: a zone made of boulders and coral has no use for them and omits
+   * it. See {@link BoxCollider} for why a wall cannot be a cylinder.
+   */
+  readonly boxColliders?: BoxCollider[];
   readonly particleCount: number;
 
   /**
@@ -108,7 +115,7 @@ export interface Zone {
    * models stream in after, rather than forcing every zone's build to be async.
    * Called once, right after `build`.
    */
-  dressing?(loader: AssetLoaderLike): Promise<void>;
+  dressing?(loader: AssetLoaderLike, densityScale?: number): Promise<void>;
   update(dt: number, camera: PerspectiveCamera, renderer: WebGLRenderer): void;
   setParticleScale(scale: number): void;
 

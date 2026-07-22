@@ -7,11 +7,12 @@ import { lengthAt, rollWildGrowth } from '../data/growth';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { SignalCarrier, CarrierHitResult } from '../entities/SignalCarrier';
 import type { DeadSignalField } from './DeadSignalField';
-import type { CylinderCollider, PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
+import type { PopulationArea, TerrainLike, ZoneBounds } from '../world/types';
+import type { Solids } from '../world/Solids';
 
 export interface ZoneBinding {
   terrain: TerrainLike;
-  colliders: CylinderCollider[];
+  solids: Solids;
   bounds: ZoneBounds;
   /** Null → this zone has no ecosystem (e.g. the blockout). */
   area: PopulationArea | null;
@@ -109,7 +110,7 @@ export class Ecosystem {
   frenzyCount = 0;
   private playerThreatT = 0;
   private terrain: TerrainLike | null = null;
-  private colliders: CylinderCollider[] = [];
+  private solids!: Solids;
   private bounds: ZoneBounds | null = null;
   private area: PopulationArea | null = null;
   // Spawn-safe bubble: creatures are repelled from it and cannot bite the player
@@ -136,7 +137,7 @@ export class Ecosystem {
       playerAlive: true,
       playerThreatT: 0,
       terrain: null as unknown as TerrainLike,
-      colliders: this.colliders,
+      solids: this.solids,
       bounds: null as unknown as ZoneBounds,
       habitat: null as unknown as PopulationArea,
       creatures: this.creatures,
@@ -178,11 +179,11 @@ export class Ecosystem {
     this.field = null;
     this.frenzyCount = 0;
     this.terrain = b.terrain;
-    this.colliders = b.colliders;
+    this.solids = b.solids;
     this.bounds = b.bounds;
     this.area = b.area;
     this.ctx.terrain = b.terrain;
-    this.ctx.colliders = b.colliders;
+    this.ctx.solids = b.solids;
     this.ctx.bounds = b.bounds;
     this.ctx.habitat = b.area as PopulationArea;
     if (b.area) {
@@ -375,6 +376,7 @@ export class Ecosystem {
     for (let i = 0; i < this.creatures.length; i++) {
       const c = this.creatures[i];
       if (!c.alive) {
+        this.setAttached(c, false);
         c.respawnTimer -= dt;
         if (c.respawnTimer <= 0) this.respawn(c);
         continue;
@@ -393,7 +395,7 @@ export class Ecosystem {
       } else {
         thinkStride = 24; animStride = 0; visible = false; // far offscreen: cheap
       }
-      c.inst.root.visible = visible;
+      this.setAttached(c, visible);
 
       const f = this.frame + c.phase;
       if (f % thinkStride === 0) c.think(this.ctx, dt * thinkStride);
@@ -406,6 +408,33 @@ export class Ecosystem {
       } else if (f % 8 === 0) {
         c.move(this.ctx, dt * 8);
       }
+    }
+  }
+
+  /**
+   * Put a creature into the scene graph, or take it out.
+   *
+   * This replaces setting `root.visible`, and the difference is the single
+   * largest CPU cost in the game. `visible` is read by the RENDERER, but
+   * `Object3D.updateMatrixWorld` — which three runs over the whole scene once
+   * per frame, before culling — does not look at it. Every fish is a skinned
+   * armature, so the population puts ~15,000 bones in the graph, and all of
+   * them recomposed a local matrix and multiplied out a world matrix every
+   * frame whether the fish was on screen, 300 m away in the fog, or dead and
+   * waiting to respawn. Measured at 7.4 ms of a 16.7 ms frame.
+   *
+   * Detaching is the fix, because an object with no parent is not walked at
+   * all. Roughly four fifths of the population is beyond the far band at any
+   * moment, so that cost mostly disappears. Nothing else reads through the
+   * scene graph to find a creature — gameplay uses `Creature.pos` — so being
+   * out of the tree is invisible to everything except rendering.
+   */
+  private setAttached(c: Creature, attached: boolean): void {
+    const root = c.inst.root;
+    if (attached) {
+      if (!root.parent) this.group.add(root);
+    } else if (root.parent) {
+      this.group.remove(root);
     }
   }
 

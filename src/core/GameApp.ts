@@ -7,6 +7,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import type { TerrainMaps, ZoneMaps } from '../world/types';
+import { Solids } from '../world/Solids';
 // Per-zone PBR sets, as GPU-compressed KTX2: diffuse, normal (GL), ARM
 // (AO/rough/metal), displacement. Shallow Veil uses Poly Haven
 // "coast_sand_rocks_02"; the Drowned Garden's cave uses "lichen_rock" (both CC0).
@@ -155,6 +156,13 @@ export class GameApp {
    *  forward for the rest of the run (you can never go back to kill them). */
   private carriedOverCarriers = 0;
   private readonly sfx = new Sfx();
+  /**
+   * Every solid in the active zone, spatially indexed. One instance for the
+   * whole app, rebound on descent, and shared by the player, the camera, and
+   * all ~280 creatures — so the index is built once per zone rather than once
+   * per reader, and nobody scans the full list.
+   */
+  private readonly solids = new Solids([]);
   private readonly damageBars = new DamageBars();
   /** Seconds of post-spawn peace before predators may hunt the host. */
   private spawnGrace = 0;
@@ -293,10 +301,11 @@ export class GameApp {
     this.fish = await PlayerFish.create(this.loader, DARTFISH);
     this.scene.add(this.fish.object);
 
+    this.solids.bind(zone.colliders, zone.boxColliders);
     this.playerCamera = new PlayerCamera(
       this.input,
       zone.terrain,
-      zone.colliders,
+      this.solids,
       window.innerWidth / window.innerHeight,
     );
     this.playerCamera.setHost(DARTFISH.camera, this.fish.length);
@@ -305,14 +314,14 @@ export class GameApp {
       this.input,
       this.playerCamera,
       zone.terrain,
-      zone.colliders,
+      this.solids,
       zone.getBounds(),
       zone.getSpawn(SPAWN),
       zone,
     );
     // The starting zone's modelled dressing, loaded before the title screen
     // clears so the world is complete the first time it is seen.
-    await zone.dressing?.(this.loader);
+    await zone.dressing?.(this.loader, this.quality.dressingScale);
 
     this.bubbles = new Bubbles(this.scene);
     this.bubbles.setPixelRatio(this.renderer.getPixelRatio());
@@ -1667,7 +1676,7 @@ export class GameApp {
     const area = zone.getPopulationArea();
     this.ecosystem.bindZone({
       terrain: zone.terrain,
-      colliders: zone.colliders,
+      solids: this.solids,
       bounds: zone.getBounds(),
       area,
       population: area ? zone.getPopulation() : [],
@@ -1751,11 +1760,12 @@ export class GameApp {
     // Rebind the persistent player rig to the new zone.
     next.getSpawn(SPAWN);
     this.bindFlora(next);
-    this.playerCamera.bindZone(next.terrain, next.colliders);
-    this.controller.bindZone(next.terrain, next.colliders, next.getBounds(), SPAWN, next);
+    this.solids.bind(next.colliders, next.boxColliders);
+    this.playerCamera.bindZone(next.terrain, this.solids);
+    this.controller.bindZone(next.terrain, this.solids, next.getBounds(), SPAWN, next);
     // Stream in the zone's modelled dressing. Awaited during the transition
     // curtain so the player never sees rocks and plants popping into place.
-    await next.dressing?.(this.loader);
+    await next.dressing?.(this.loader, this.quality.dressingScale);
     this.bindEcosystem(next);
     this.ecosystem.armSpawnSafe(SPAWN.x, SPAWN.z, 30);
     // A fresh zone gets a fresh set of objectives.

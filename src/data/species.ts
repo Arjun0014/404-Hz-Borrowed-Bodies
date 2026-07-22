@@ -69,7 +69,16 @@ export type AbilityKind =
   /** Manta: a gliding barrel-roll that sheds damage and covers ground. */
   | 'glide'
   /** Megalodon: a devastating charge that swallows everything in its path. */
-  | 'rampage';
+  | 'rampage'
+  // ---- Fallen Kingdom hosts ----
+  /** Anglerfish: the esca. Draws everything nearby in and holds it there. */
+  | 'lure'
+  /** Koi: an enormous speed surge — the fastest thing in the game, faster. */
+  | 'slipstream'
+  /** Trench Horror: a thrashing sweep that mauls everything within reach. */
+  | 'maelstrom'
+  /** Watcher: its gaze freezes every creature that can see it. */
+  | 'gaze';
 
 export interface AbilityDef {
   kind: AbilityKind;
@@ -305,6 +314,42 @@ const ROSTER: Record<string, Partial<SpeciesDef>> = {
     camera: { distanceFactor: 2.3, minDistance: 5.0, heightFactor: 1.5, baseFov: 66 },
     connectionMult: 1.0,
     identity: 'The thing the cave is afraid of. Now it is you.',
+  },
+
+  // ---- Fallen Kingdom roster ----
+  anglerfish: {
+    archetype: 'defensive',
+    // Slow, short-reaching, and it hits like a truck. The trade is explicit:
+    // you will not chase anything down in this body, but very little kills you.
+    attack: { name: 'Snare', damageMult: 3.0, reachMult: 1.0, cooldown: 2.1, lungeSpeed: 13, sweep: false },
+    ability: { kind: 'lure', name: 'Lure', cooldown: 11, duration: 3.5, desc: 'Light the esca — everything nearby is drawn in and held.' },
+    connectionMult: 1.0,
+    identity: 'Abyssal wall — slow and short-armed, but almost nothing kills it.',
+  },
+  koi: {
+    archetype: 'skirmisher',
+    // Fast and precise rather than heavy: the damage is in how often you land it.
+    attack: { name: 'Flash', damageMult: 1.1, reachMult: 1.0, cooldown: 0.8, lungeSpeed: 34, sweep: false },
+    ability: { kind: 'slipstream', name: 'Slipstream', cooldown: 7, duration: 2.2, desc: 'Run the current — untouchable speed, and nothing can hold you.' },
+    camera: { distanceFactor: 2.4, minDistance: 2.2, heightFactor: 1.4, baseFov: 68 },
+    connectionMult: 1.0,
+    identity: 'The fastest body in the sea. Everything else is standing still.',
+  },
+  monsterfish: {
+    archetype: 'apex',
+    attack: { name: 'Rend', damageMult: 3.2, reachMult: 1.5, cooldown: 1.8, lungeSpeed: 25, sweep: true },
+    ability: { kind: 'maelstrom', name: 'Maelstrom', cooldown: 13, duration: 2.4, desc: 'Thrash — maul everything within reach, whichever way it is facing.' },
+    camera: { distanceFactor: 2.2, minDistance: 6.0, heightFactor: 1.5, baseFov: 68 },
+    connectionMult: 1.0,
+    identity: 'What the drowned city grew after the people left.',
+  },
+  eyemonster: {
+    archetype: 'apex',
+    attack: { name: 'Swallow', damageMult: 2.8, reachMult: 1.35, cooldown: 1.7, lungeSpeed: 23, sweep: true },
+    ability: { kind: 'gaze', name: 'Gaze', cooldown: 12, duration: 3.0, desc: 'Hold them in your eye — everything that can see you stops dead.' },
+    camera: { distanceFactor: 2.3, minDistance: 5.5, heightFactor: 1.5, baseFov: 66 },
+    connectionMult: 1.0,
+    identity: 'It was watching the whole time. Now you are the one watching.',
   },
 
   shark: {

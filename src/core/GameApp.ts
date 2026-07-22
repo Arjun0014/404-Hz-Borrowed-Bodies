@@ -65,7 +65,7 @@ import { DamageBars } from '../ui/DamageBars';
 import { SignalCarrier } from '../entities/SignalCarrier';
 import { DeadSignalField } from '../systems/DeadSignalField';
 import { Score } from '../systems/Score';
-import type { CylinderCollider, Zone } from '../world/types';
+import type { CarrierSpec, CylinderCollider, Zone } from '../world/types';
 import type { Creature } from '../entities/Creature';
 
 const TAIL_POS = new Vector3();
@@ -150,6 +150,8 @@ export class GameApp {
   private floraDisposed = false;
   /** The carriers' solid obstacles, pushed into the zone's collider array. */
   private readonly carrierColliders: CylinderCollider[] = [];
+  /** Whether the zone's descent membrane is currently raised. */
+  private sealShown = false;
   /** How many carriers this zone started with (for the "N left" objective read). */
   private carrierTotalThisZone = 0;
   /** Carriers left ALIVE in earlier zones — their Connection pressure carries
@@ -222,7 +224,10 @@ export class GameApp {
       } else if (this.promptShown && !this.transitioning) {
         if (e.code === 'KeyE') {
           e.preventDefault();
-          void this.doDescend();
+          // Sealed exits refuse the key outright rather than failing silently.
+          const sealer = this.sealingCarrier;
+          if (sealer) this.showHint(`${sealer.title} still holds the way down`, 2.4);
+          else void this.doDescend();
         } else if (e.code === 'KeyQ') {
           e.preventDefault();
           this.cancelDescent();
@@ -1451,20 +1456,25 @@ export class GameApp {
    */
   private async buildCarriers(zone: Zone): Promise<void> {
     this.disposeCarriers();
-    const anchors = zone.getCarrierAnchors();
-    if (anchors.length === 0) return;
+    // A zone may describe its carriers individually (the Fallen Kingdom pairs a
+    // relay with a colossal squid) or just hand over N identical anchors.
     const cfg = zone.getCarrierConfig?.() ?? { size: 12, health: 3000 };
+    const specs: CarrierSpec[] =
+      zone.getCarrierSpecs?.() ??
+      zone.getCarrierAnchors().map((anchor) => ({ anchor, size: cfg.size, health: cfg.health }));
+    if (specs.length === 0) return;
 
-    for (const anchor of anchors) {
+    for (const spec of specs) {
       let carrier: SignalCarrier;
       try {
         carrier = await SignalCarrier.create(
           this.loader,
           this.scene,
-          anchor,
+          spec.anchor,
           zone.getBounds().ceilingY,
-          cfg.size,
-          cfg.health,
+          spec.size,
+          spec.health,
+          spec.variant,
         );
       } catch (err) {
         // Non-fatal: the zone is still playable, it just has one fewer objective.
@@ -1474,6 +1484,15 @@ export class GameApp {
       carrier.onDeath = (pos) => this.onCarrierDeath(pos);
       carrier.onNodeDestroyed = (left) => this.onCarrierNode(left);
       carrier.onPulse = (prox) => this.sfx.carrierPulse(prox);
+      // A melee variant hits the player directly. Routed through the same
+      // takeDamage path as a predator's bite so guard, i-frames and the death
+      // screen all behave exactly as they already do.
+      carrier.onStrike = (dmg) => {
+        if (this.combat.dead || this.transitioning) return;
+        this.combat.takeDamage(dmg);
+        this.playerCamera.punch(20);
+        this.sfx.biteLanded();
+      };
       this.carriers.push(carrier);
 
       // Make the relay solid — one collider per carrier in the zone's live array,
@@ -1613,7 +1632,20 @@ export class GameApp {
 
     // Corpses keep updating after death so their collapse flare plays out; they
     // are only disposed on zone change.
-    for (const c of this.carriers) c.update(dt, pos);
+    for (let i = 0; i < this.carriers.length; i++) {
+      const c = this.carriers[i];
+      c.update(dt, pos);
+      // A patrolling carrier moves, so its solid has to move with it. Leaving
+      // the collider at the spawn anchor would park an invisible wall over the
+      // descent and let you swim through the body itself.
+      const col = this.carrierColliders[i];
+      if (col && c.alive) {
+        col.x = c.pos.x;
+        col.z = c.pos.z;
+        col.top = c.pos.y + c.radius;
+      }
+    }
+    this.updateDescentSeal();
 
     if (this.field) {
       if (!this.field.update(dt)) {
@@ -1686,6 +1718,30 @@ export class GameApp {
 
   // ---- descent flow --------------------------------------------------------
 
+  /**
+   * The carrier holding this zone's exit shut, if there is one and it lives.
+   *
+   * A sealing carrier turns its zone's descent from a decision into a fight:
+   * you cannot leave the Fallen Kingdom without going through the Drowned
+   * Herald, because the Herald is what is generating the membrane.
+   */
+  private get sealingCarrier(): SignalCarrier | null {
+    for (const c of this.carriers) if (c.sealsDescent && c.alive) return c;
+    return null;
+  }
+
+  /** Keep the zone's visible membrane in step with its sealing carrier. */
+  private updateDescentSeal(): void {
+    const sealed = !!this.sealingCarrier;
+    if (sealed === this.sealShown) return;
+    this.sealShown = sealed;
+    this.zones.current.setDescentSealed?.(sealed);
+    if (!sealed) {
+      this.showHint('the seal over the throat gutters and fails — the way down is open', 5);
+      this.sfx.carrierDeath();
+    }
+  }
+
   private checkDescent(): void {
     const inZone = this.zones.current.isInDescentZone(this.controller.pos);
     if (inZone) {
@@ -1701,6 +1757,30 @@ export class GameApp {
     if (!info) return;
     this.promptShown = true;
     const el = document.getElementById('descend-prompt')!;
+    // Sealed: the same card, but it is telling you what to kill rather than
+    // asking whether you are ready. E is refused while this is up (see the
+    // keydown handler), so the prompt cannot lie about being actionable.
+    const sealer = this.sealingCarrier;
+    el.classList.toggle('sealed', !!sealer);
+    const keys = el.querySelector('.dp-keys') as HTMLElement;
+    if (sealer) {
+      (el.querySelector('.dp-title') as HTMLElement).innerHTML =
+        `THE WAY DOWN IS <span class="dp-target">SEALED</span>`;
+      (el.querySelector('.dp-warn') as HTMLElement).textContent =
+        `${sealer.title} is holding the throat shut.`;
+      (el.querySelector('.dp-rec') as HTMLElement).textContent =
+        'Break it, and the seal breaks with it.';
+      (el.querySelector('.dp-carrier') as HTMLElement)?.classList.add('hidden');
+      keys.innerHTML = '<b>Q</b> back off';
+      el.classList.remove('hidden');
+      return;
+    }
+    keys.innerHTML = '<b>E</b> descend &nbsp;·&nbsp; <b>Q</b> stay';
+    (el.querySelector('.dp-title') as HTMLElement).innerHTML =
+      `DESCEND TO <span class="dp-target">THE DEEP</span>?`;
+    (el.querySelector('.dp-warn') as HTMLElement).textContent = 'There is no return.';
+    (el.querySelector('.dp-rec') as HTMLElement).innerHTML =
+      'Recommended Dominance: <span class="dp-dom">Hunter</span>';
     (el.querySelector('.dp-target') as HTMLElement).textContent = info.targetName;
     (el.querySelector('.dp-dom') as HTMLElement).textContent = info.recommendedDominance;
     // Descent should feel earned. If the zone's Carrier is still broadcasting,

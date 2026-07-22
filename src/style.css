@@ -144,6 +144,20 @@ html, body {
 .dp-keys { margin-top: 18px; font-size: 13px; letter-spacing: 0.12em; opacity: 0.85; }
 .dp-keys b { color: #7deede; }
 
+/* Sealed exit: the same card, but it is a refusal rather than a question, so it
+   takes the violet of the seal itself instead of the teal of a live descent. */
+#descend-prompt.sealed .dp-card {
+  border-color: rgba(178, 120, 255, 0.55);
+  box-shadow: 0 0 46px rgba(0, 0, 0, 0.55), inset 0 0 34px rgba(150, 90, 255, 0.12);
+}
+#descend-prompt.sealed .dp-title { color: #e2d2ff; }
+#descend-prompt.sealed .dp-target { color: #b278ff; }
+#descend-prompt.sealed .dp-warn {
+  color: #b278ff; letter-spacing: 0.12em; text-transform: none; font-size: 15px;
+}
+#descend-prompt.sealed .dp-rec { opacity: 0.7; }
+#descend-prompt.sealed .dp-keys b { color: #b278ff; }
+
 /* Descent transition */
 #transition {
   position: fixed; inset: 0;

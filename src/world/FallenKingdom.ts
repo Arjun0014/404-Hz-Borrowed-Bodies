@@ -18,6 +18,7 @@ import {
   RepeatWrapping,
   type Scene,
   ShaderMaterial,
+  SphereGeometry,
   type Texture,
   Vector3,
   type WebGLRenderer,
@@ -26,6 +27,7 @@ import { KINGDOM, KingdomTerrain } from './KingdomTerrain';
 import { KingdomDressing } from './KingdomDressing';
 import type {
   AssetLoaderLike,
+  CarrierSpec,
   CylinderCollider,
   DescentInfo,
   PopulationArea,
@@ -36,6 +38,48 @@ import type {
 import type { BoxCollider } from './Solids';
 import { FALLEN_KINGDOM_POP } from '../data/creatures';
 import type { PopEntry } from '../data/creatures';
+import type { CarrierVariant } from '../entities/SignalCarrier';
+import heraldUrl from '../../assets/fallen kingdom/hsw_boss_colossal_squid_lot_of_animations.glb?url';
+
+/**
+ * How wide a ring the Herald patrols around the throat: tight enough that it is
+ * unmistakably guarding the hole rather than wandering the basin, and low enough
+ * that it stays down inside the collapse with you.
+ */
+const HERALD_ORBIT = 38;
+
+/**
+ * The Drowned Herald: the colossal squid that holds the way out.
+ *
+ * It is a Signal Carrier — same nodes, same aura, same Dead Signal Field when
+ * it dies — but it behaves like the animal it is. It patrols a ring above the
+ * collapse rather than hovering, it never leaves that ring to chase, and
+ * anything that swims inside its arms gets lashed. Five shield nodes instead of
+ * three, because at 46 m it is nearly three times the size of the relay upstairs
+ * and three nodes read as sparse on a body that big.
+ *
+ * Its real weight is the seal: while it lives, the throat at the bottom of the
+ * geode is shut, so this is not an optional encounter. You leave through it.
+ */
+const HERALD: CarrierVariant = {
+  modelUrl: heraldUrl,
+  title: 'The Drowned Herald',
+  roam: { radius: HERALD_ORBIT, speed: 5.2, rise: 4 },
+  // Long arms, a slow telegraph, and a hit that genuinely hurts an apex host.
+  melee: { range: 42, damage: 46, cooldown: 3.4, windup: 0.75 },
+  clips: {
+    idle: /A_Idle$/i,
+    swim: /A_Swim$/i,
+    fast: /SwimFast/i,
+    attack: /A_Attack$/i,
+    death: /Death/i,
+  },
+  nodeCount: 5,
+  sealsDescent: true,
+  radiusFactor: 0.3,
+  // The pack ships the boss in a Christmas hat. It is not staying.
+  hideMeshes: /xmashat/i,
+};
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -102,6 +146,10 @@ export class FallenKingdom implements Zone {
   private masonryTexture: Texture | null = null;
   private city: KingdomDressing | null = null;
   private readonly disposables: { dispose(): void }[] = [];
+  /** The membrane over the throat, and whether it is currently up. */
+  private sealMesh: Mesh | null = null;
+  private sealMat: ShaderMaterial | null = null;
+  private sealed = true;
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -182,6 +230,7 @@ export class FallenKingdom implements Zone {
 
     this.buildBeam();
     this.buildExitThroat();
+    this.buildSeal();
     this.buildParticles(particleScale);
 
     this.scene.add(this.group);
@@ -458,28 +507,64 @@ export class FallenKingdom implements Zone {
   }
 
   /**
-   * THREE Signal Carriers, one per district, so clearing the level walks you
-   * through the whole city: the throne on the acropolis, the great gate at the
-   * far end of the processional avenue, and the sunken cathedral down in the
-   * geode. Each sits somewhere you would swim to anyway just to see it.
+   * TWO carriers, and they are the level's whole arc.
+   *
+   * The first is the relay in the nave, at the top of the city — the thing you
+   * fall past the breach to find. The second is the Drowned Herald, a colossal
+   * squid coiled over the collapse, and it is the reason the way down is shut.
+   * There is nothing else to do in this zone: climb to the throne, then fight
+   * your way out through the bottom.
+   *
+   * (This replaces three district relays. A third made the level a checklist;
+   * two make it a route.)
+   */
+  /**
+   * Unused by this zone — {@link getCarrierSpecs} supersedes it — but the Zone
+   * interface requires it, and returning the specs' anchors keeps the two in
+   * step for anything that reads anchors generically.
    */
   getCarrierAnchors(): Vector3[] {
-    const spots: [number, number][] = [
-      // In the NAVE, in front of the throne — not on it. The throne crystal is
-      // 82 m across and sits dead centre, so a carrier at (0,0) spawned inside
-      // it: invisible, unreachable, and unkillable.
-      [-52, 0],
-      [KINGDOM.gate.x + 30, 0], // just inside the great gate
-      // Down inside the collapse, among the crystal — far enough from the
-      // throat that the descent prompt never fires while you are fighting it.
-      [195, 178],
-    ];
-    return spots.map(([x, z]) => new Vector3(x, this.terrain.heightAt(x, z), z));
+    return this.getCarrierSpecs().map((s) => s.anchor.clone());
   }
 
-  /** The deepest zone yet: the largest, toughest relays in the game so far. */
-  getCarrierConfig(): { size: number; health: number } {
-    return { size: 17, health: 5000 };
+  getCarrierSpecs(): CarrierSpec[] {
+    const at = (x: number, z: number): Vector3 => new Vector3(x, this.terrain.heightAt(x, z), z);
+    const e = KINGDOM.exit;
+    return [
+      {
+        // In the NAVE, in front of the throne — not on it. The throne crystal is
+        // 82 m across and sits dead centre, so a carrier at (0,0) spawned inside
+        // it: invisible, unreachable, and unkillable.
+        anchor: at(-52, 0),
+        size: 17,
+        health: 5000,
+      },
+      {
+        // Anchored to the highest ground its own patrol crosses, not to the
+        // floor beneath the throat. The geode is a bowl: at the Herald's orbit
+        // radius the floor has already climbed 97 m from the centre, so hovering
+        // a fixed height above the CENTRE buried a third of the circuit in the
+        // crater wall (measured: 26.6 m inside the rock).
+        anchor: new Vector3(e.x, this.ringCeilingY(e.x, e.z, HERALD_ORBIT), e.z),
+        size: 46,
+        health: 9000,
+        variant: HERALD,
+      },
+    ];
+  }
+
+  /** Highest terrain anywhere on a patrol ring, so a roamer clears all of it. */
+  private ringCeilingY(cx: number, cz: number, radius: number): number {
+    let top = -Infinity;
+    for (let a = 0; a < 24; a++) {
+      const th = (a / 24) * Math.PI * 2;
+      // The orbit radius breathes between 0.82x and 1.0x (see SignalCarrier), so
+      // sample the whole band it can actually reach.
+      for (const r of [radius * 0.82, radius * 0.91, radius]) {
+        top = Math.max(top, this.terrain.heightAt(cx + Math.cos(th) * r, cz + Math.sin(th) * r));
+      }
+    }
+    return top;
   }
 
   getDescentInfo(): DescentInfo {
@@ -514,10 +599,78 @@ export class FallenKingdom implements Zone {
     return false;
   }
 
+  // ---- the Herald's seal ----------------------------------------------------
+
+  /**
+   * The membrane across the throat.
+   *
+   * A dome rather than a flat disc: swum at from the basin floor you meet a
+   * surface that curves away from you, which reads as "closed" from any angle,
+   * where a disc seen edge-on reads as nothing at all. Rendered back-side-first
+   * with additive blending and no depth write, so it glows over the crystal
+   * below instead of z-fighting the rock it is anchored in.
+   */
+  private buildSeal(): void {
+    const e = KINGDOM.exit;
+    const y = this.terrain.heightAt(e.x, e.z);
+    const geo = new SphereGeometry(e.radius * 1.25, 40, 20, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    this.sealMat = new ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: DoubleSide,
+      blending: AdditiveBlending,
+      uniforms: { uTime: { value: 0 }, uFade: { value: 1 } },
+      vertexShader: `
+        varying vec3 vN;
+        varying vec3 vP;
+        void main() {
+          vN = normalize(normalMatrix * normal);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vP = mv.xyz;
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uFade;
+        varying vec3 vN;
+        varying vec3 vP;
+        void main() {
+          // Rim-bright, so the dome's edge draws the eye to how big the hole is.
+          float fres = pow(1.0 - abs(dot(normalize(vN), normalize(-vP))), 2.0);
+          // Two counter-running bands of interference: a signal, not a forcefield.
+          float band = sin(vP.y * 0.35 - uTime * 1.7) * 0.5 + 0.5;
+          float band2 = sin(vP.y * 0.11 + uTime * 0.9) * 0.5 + 0.5;
+          float a = (0.10 + fres * 0.72) * (0.55 + band * 0.3 + band2 * 0.25);
+          vec3 col = mix(vec3(0.32, 0.86, 1.0), vec3(0.75, 0.42, 1.0), band2);
+          gl_FragColor = vec4(col * (0.7 + fres * 1.6), a * uFade);
+        }
+      `,
+    });
+    this.sealMesh = new Mesh(geo, this.sealMat);
+    this.sealMesh.name = 'kingdom-descent-seal';
+    this.sealMesh.position.set(e.x, y - 6, e.z);
+    this.sealMesh.renderOrder = 3;
+    this.group.add(this.sealMesh);
+    this.disposables.push(geo, this.sealMat);
+  }
+
+  /** Raise or drop the membrane. Driven by the Herald's life, from GameApp. */
+  setDescentSealed(sealed: boolean): void {
+    this.sealed = sealed;
+    if (this.sealMesh) this.sealMesh.visible = sealed;
+  }
+
+  /** True while the Herald still holds the throat shut. */
+  get descentSealed(): boolean {
+    return this.sealed;
+  }
+
   // ---- frame update ---------------------------------------------------------
 
   update(dt: number, camera: PerspectiveCamera, renderer: WebGLRenderer): void {
     this.time += dt;
+    if (this.sealMat && this.sealed) this.sealMat.uniforms.uTime.value = this.time;
     this.particleMat.uniforms.uTime.value = this.time;
     this.particleMat.uniforms.uCamPos.value.copy(camera.position);
     this.particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();

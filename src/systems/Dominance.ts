@@ -1,5 +1,7 @@
-import type { CreatureSpecies } from '../data/creatures';
+import type { CreatureSpecies, DomClass } from '../data/creatures';
 import type { RunState } from '../state/RunState';
+
+export type { DomClass };
 
 /** Dominance ranks (GAME_DESIGN §7.4). Only the lower ranks are reachable in the
  *  Shallow Veil; deeper zones supply the stronger targets for higher ranks. */
@@ -13,16 +15,26 @@ export const RANKS: DomRank[] = [
   { name: 'Predator', at: 90 },
   { name: 'Abyssal', at: 260 },
   { name: 'Usurper', at: 650 },
+  // The Fallen Kingdom's rank. You reach this zone already wearing a megalodon,
+  // so 'apex' has stopped meaning anything here — Usurper freely possesses every
+  // apex in the game. Sovereign is what the trench giants ask for, and killing
+  // them is the only way to get it.
+  { name: 'Sovereign', at: 1400 },
 ];
 
-/** Creature Dominance class — sets both the base value and the cap it can reach. */
-export type DomClass = 'weak' | 'medium' | 'strong' | 'apex';
-
-const CLASS_VALUE: Record<DomClass, number> = { weak: 1, medium: 4, strong: 14, apex: 35 };
+const CLASS_VALUE: Record<DomClass, number> = {
+  weak: 1, medium: 4, strong: 14, apex: 35, leviathan: 90,
+};
 // The maximum Dominance a class can push you to. This is the anti-farming core:
 // weak prey stalls just into Hunter, so tiny fish can never unlock predator-level
 // control — you must defeat progressively stronger creatures to rank up.
-const CLASS_CAP: Record<DomClass, number> = { weak: 30, medium: 95, strong: 280, apex: Infinity };
+//
+// `apex` stays uncapped, deliberately. Capping it would have retuned the Garden's
+// megalodon, and this pass is only meant to add a tier on top, not move the
+// existing ladder underneath it.
+const CLASS_CAP: Record<DomClass, number> = {
+  weak: 30, medium: 95, strong: 280, apex: Infinity, leviathan: Infinity,
+};
 
 const FIRST_KILL_BONUS = 2.5; // first defeat of a species this run is worth more
 const FALLOFF = 0.5; // per repeat of the same species → diminishing returns
@@ -31,7 +43,9 @@ const FALLOFF = 0.5; // per repeat of the same species → diminishing returns
 // and so freely possessable at any health — once your rank index reaches it. So a
 // starting Drifter can already take same-tier weak fish (clownfish, fry, other
 // prey); foragers open up at Hunter, predators at Predator, apex at Abyssal.
-const CLASS_PEER_RANK: Record<DomClass, number> = { weak: 0, medium: 1, strong: 2, apex: 3 };
+const CLASS_PEER_RANK: Record<DomClass, number> = {
+  weak: 0, medium: 1, strong: 2, apex: 3, leviathan: 4,
+};
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -39,6 +53,10 @@ function clamp(v: number, lo: number, hi: number): number {
 
 /** Which Dominance class + base value a species is worth to defeat. */
 export function classify(species: CreatureSpecies): { cls: DomClass; value: number } {
+  // An explicit class wins: the trench giants are 'leviathan' and the rare
+  // deep-water hunters punch above their role, neither of which the role/apex
+  // heuristic below can express.
+  if (species.domClass) return { cls: species.domClass, value: CLASS_VALUE[species.domClass] };
   if (species.apex) return { cls: 'apex', value: CLASS_VALUE.apex };
   if (species.role === 'predator') return { cls: 'strong', value: CLASS_VALUE.strong };
   if (species.role === 'forager' || species.role === 'crab') return { cls: 'medium', value: CLASS_VALUE.medium };

@@ -16,6 +16,10 @@ import megalodonUrl from '../../assets/shark_megalodon.glb?url';
 import mantaUrl from '../../assets/drowned garden/manta.glb?url';
 import magnapinnaUrl from '../../assets/drowned garden/magnapinna_squid.glb?url';
 import fireflySquidUrl from '../../assets/drowned garden/firefly-squid-glowing.glb?url';
+import monsterFishUrl from '../../assets/fallen kingdom/monster_fish.glb?url';
+import eyeMonsterUrl from '../../assets/fallen kingdom/eye_monster.glb?url';
+import anglerfishUrl from '../../assets/fallen kingdom/weird_deepsea_anglerfish.glb?url';
+import koiUrl from '../../assets/fallen kingdom/secret_low_poly_cartoon_koi_fish.glb?url';
 
 /**
  * prey     — schooling fish; flees anything that can eat it.
@@ -24,6 +28,16 @@ import fireflySquidUrl from '../../assets/drowned garden/firefly-squid-glowing.g
  * crab     — walks the seabed; ambush-jumps passing fish.
  */
 export type CreatureRole = 'prey' | 'forager' | 'predator' | 'crab';
+
+/**
+ * Dominance class — what defeating this creature is worth, and what rank you
+ * need before you can wear it freely (see systems/Dominance).
+ *
+ * Declared here rather than in Dominance so the data layer owns it: Dominance
+ * already imports CreatureSpecies, and a species that names its own class would
+ * otherwise close an import cycle.
+ */
+export type DomClass = 'weak' | 'medium' | 'strong' | 'apex' | 'leviathan';
 
 export interface CreatureSpecies {
   id: string;
@@ -49,6 +63,13 @@ export interface CreatureSpecies {
   role: CreatureRole;
   /** Apex (shark) can eat even other predators. */
   apex?: boolean;
+  /**
+   * Override the Dominance class this creature is worth (see systems/Dominance).
+   * Normally derived from `role` + `apex`; the Fallen Kingdom's trench giants set
+   * it to 'leviathan' because you ARRIVE in this zone wearing a megalodon, and a
+   * creature you already out-rank is not a target.
+   */
+  domClass?: DomClass;
 
   // ---- movement ----
   maxSpeed: number;
@@ -193,6 +214,65 @@ export const SPECIES: CreatureSpecies[] = [
     senseRadius: 64, schooling: false, hungerRate: 0.06, animSpeed: 0.85, procedural: false,
   },
 
+  // ================= The Fallen Kingdom =================
+  // The drowned city's own fauna. Referenced ONLY by FALLEN_KINGDOM_POP, so
+  // adding them leaves the Veil and the Garden exactly as they were.
+
+  /**
+   * The trench's two apex forms. You arrive in this zone wearing a megalodon,
+   * so the resident giants have to out-class one: both are 'leviathan', a
+   * Dominance tier above apex, which means a megalodon-riding player cannot
+   * simply walk in and wear them. They are also the only creatures in the game
+   * with a genuinely wide wild size range — the ask was "very big, with varying
+   * sizes", and at wildMaxGrowth 0.55 a monster fish runs 9 m to 28 m, so the
+   * one across the plaza might be smaller than you or twice your length.
+   */
+  {
+    id: 'monsterfish', displayName: 'Trench Horror', modelUrl: monsterFishUrl,
+    baseLength: 9, baseHealth: 300, wildMaxGrowth: 0.55, flipForward: false,
+    role: 'predator', apex: true, domClass: 'leviathan',
+    maxSpeed: 11.5, accel: 22, drag: 1.3, turnRate: 1.7,
+    senseRadius: 60, schooling: false, hungerRate: 0.06, animSpeed: 0.9, procedural: false,
+  },
+  {
+    id: 'eyemonster', displayName: 'Watcher', modelUrl: eyeMonsterUrl,
+    baseLength: 8, baseHealth: 280, wildMaxGrowth: 0.5, flipForward: false,
+    role: 'predator', apex: true, domClass: 'leviathan',
+    maxSpeed: 10.5, accel: 19, drag: 1.35, turnRate: 2.0,
+    senseRadius: 66, schooling: false, hungerRate: 0.05, animSpeed: 0.8, procedural: false,
+  },
+
+  /**
+   * Two rarities, two each in the whole zone, each worth hunting for its body
+   * rather than its meat.
+   *
+   * The anglerfish is a wall: 620 HP at minimum size is more than a megalodon's
+   * 260, and it hits harder than anything else that is not a leviathan. You do
+   * not out-trade it, you out-last it.
+   *
+   * The koi is the opposite — the fastest creature in the game at 20 m/s, ahead
+   * of the megalodon's 13.5, with the turn rate to use it. That is exactly what
+   * makes it hard to catch and exactly what makes wearing it worth the chase.
+   */
+  {
+    id: 'anglerfish', displayName: 'Abyssal Angler', modelUrl: anglerfishUrl,
+    baseLength: 4.2, baseHealth: 620, wildMaxGrowth: 0.4, flipForward: false,
+    role: 'predator', domClass: 'apex',
+    maxSpeed: 6.4, accel: 15, drag: 1.7, turnRate: 1.9,
+    senseRadius: 40, schooling: false, hungerRate: 0.08, animSpeed: 0.85, procedural: false,
+    animClip: /default/i, // the other two clips are bites, driven on attack
+  },
+  {
+    id: 'koi', displayName: 'Gilded Koi', modelUrl: koiUrl,
+    baseLength: 2.2, baseHealth: 90, wildMaxGrowth: 0.45, flipForward: false,
+    role: 'forager', domClass: 'strong',
+    maxSpeed: 20, accel: 40, drag: 1.9, turnRate: 5.0,
+    // It sees you coming from a long way off and leaves. That, plus the speed,
+    // is the whole difficulty — there is no tanking it down, you have to corner it.
+    senseRadius: 70, schooling: false, hungerRate: 0.03, animSpeed: 1.3, procedural: false,
+    animClip: /swim/i,
+  },
+
   // ---- crab (seabed ambusher) — big enough to read clearly on the seabed ----
   {
     id: 'crab', displayName: 'Reef Crab', modelUrl: crabUrl, baseLength: 2.7, baseHealth: 70,
@@ -278,25 +358,58 @@ export const DROWNED_GARDEN_POP: PopEntry[] = [
 ];
 
 /**
- * Populates the Fallen Kingdom — the drowned crystal well beneath the Garden.
- * A vertical shaft reads best with fauna spread through its whole height, so this
- * leans on cheap schooling species for volume and keeps the heavy hunters rare.
- * Reuses the already-wired roster (bespoke abyssal fauna — the eye monster,
- * anglerfish, koi — are a later pass); one megalodon prowls the depths as the
- * apex, on top of the two Signal Carriers that are the level's real objective.
+ * Populates the Fallen Kingdom — the drowned city.
+ *
+ * Weighted deliberately: MANY cheap fish, FEW expensive ones. A ruined city
+ * should be teeming in its streets and quiet in its depths, and the only way to
+ * buy that is to spend the budget on models that cost almost nothing.
+ *
+ * The number that decides "cheap" here is not triangles — it is BONES. Every
+ * fish is a skinned armature, and each bone recomposes a matrix every frame it
+ * is near the player, which is the single largest CPU cost in the game (see
+ * Ecosystem.setAttached). The two numbers disagree wildly, and going by
+ * triangles alone picks exactly the wrong fish:
+ *
+ *   fish_school_1 (fry, silverside)   534 tris    5 bones   <- the best value
+ *   fish_school_3 (anchovy)           806 tris   10 bones
+ *   random_fish_1 (wrasse)          1,102 tris    6 bones
+ *   fish_school_2 (sardine)         6,496 tris    6 bones   <- heavy GPU, cheap CPU
+ *   crab                            5,002 tris    0 bones   <- not skinned at all
+ *   regal_angelfish                   292 tris   95 bones   <- looks free, is not
+ *   clown_fish                        276 tris   94 bones   <- looks free, is not
+ *   firefly squid                   1,562 tris  121 bones   <- worst ratio in the game
+ *
+ * So the volume comes from the 5-19 bone models, the 90-121 bone models are
+ * thinned to accents, and the result is 433 creatures carrying ~10.7k bones
+ * where the old 273 carried ~15.1k. More alive, and cheaper.
  */
 export const FALLEN_KINGDOM_POP: PopEntry[] = [
-  { speciesId: 'fireflysquid', count: 60, schoolSize: 14 }, // glow motes threading the shaft
-  { speciesId: 'fry', count: 54, schoolSize: 15 },
-  { speciesId: 'angelfish', count: 34, schoolSize: 10 },
-  { speciesId: 'barracuda', count: 30, schoolSize: 10 },
-  { speciesId: 'silverside', count: 30 },
-  { speciesId: 'anchovy', count: 24 },
-  { speciesId: 'wrasse', count: 12 },
-  { speciesId: 'angel', count: 10 },
-  { speciesId: 'manta', count: 6 },
+  // ---- the volume: cheap bodies AND cheap skeletons -----------------------
+  { speciesId: 'fry', count: 110, schoolSize: 16 }, // bait balls through the streets
+  { speciesId: 'silverside', count: 80 },
+  { speciesId: 'anchovy', count: 70 },
+  { speciesId: 'wrasse', count: 30 },
+  { speciesId: 'angel', count: 24 },
+  { speciesId: 'sardine', count: 6 }, // a few bigger silhouettes; 6 bones apiece
+  { speciesId: 'crab', count: 8 }, // rubble-pickers — zero bones, procedural
+
+  // ---- accents: beautiful, but 90-120 bones each, so kept scarce ----------
+  { speciesId: 'fireflysquid', count: 26, schoolSize: 13 }, // glow motes in the dark
+  { speciesId: 'angelfish', count: 24, schoolSize: 8 },
+  { speciesId: 'barracuda', count: 14, schoolSize: 7 },
+  { speciesId: 'clownfish', count: 6 },
+
+  // ---- hunters: rare on purpose, so meeting one means something -----------
   { speciesId: 'grouper', count: 6 },
-  { speciesId: 'magnapinna', count: 5 },
-  { speciesId: 'clownfish', count: 5 },
+  { speciesId: 'manta', count: 3 },
+  { speciesId: 'magnapinna', count: 3 },
+
+  // ---- the trench's own: the giants this zone is actually about -----------
+  { speciesId: 'monsterfish', count: 8 },
+  { speciesId: 'eyemonster', count: 7 },
+  // Two each, in a 760 x 760 m city. Finding one is the event.
+  { speciesId: 'anglerfish', count: 2 },
+  { speciesId: 'koi', count: 2 },
+  // The body you most likely arrived in, now swimming at you.
   { speciesId: 'megalodon', count: 1 },
 ];

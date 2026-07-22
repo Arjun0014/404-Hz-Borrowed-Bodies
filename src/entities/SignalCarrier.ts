@@ -1,5 +1,8 @@
 import {
   AdditiveBlending,
+  AnimationAction,
+  AnimationClip,
+  AnimationMixer,
   Box3,
   BufferGeometry,
   CanvasTexture,
@@ -11,6 +14,7 @@ import {
   IcosahedronGeometry,
   LineBasicMaterial,
   LineSegments,
+  LoopOnce,
   Material,
   Mesh,
   MeshBasicMaterial,
@@ -87,6 +91,51 @@ const WHITE = new Color(0xffffff);
 const STAGE_COLOR = [0x8fe6ff, 0xffd479, 0xff8a4a, 0xff3b5c];
 const STAGE_NAME = ['INTACT', 'STRAINED', 'FAILING', 'COLLAPSING'];
 
+/**
+ * An alternate body for a Signal Carrier.
+ *
+ * The relay in the first two zones is a static eye that hovers over its anchor
+ * and does nothing but broadcast. That is the right shape for a thing you find
+ * and dismantle, but the Fallen Kingdom's second carrier is a colossal squid
+ * coiled over the way out, and it has to read as an ANIMAL: it patrols, it has
+ * sixteen animation clips, and it lashes anything that swims into reach.
+ *
+ * Rather than fork the class, a variant swaps the model and switches on the
+ * behaviours the standard relay simply omits. Everything that makes a carrier a
+ * carrier — the shielding nodes, the aura, the beacon, the damage stages, the
+ * Dead Signal Field on death — is shared, so the squid IS a Signal Carrier and
+ * every system that already understands one needs no changes.
+ */
+export interface CarrierVariant {
+  /** Model to load instead of the standard eye relay. */
+  modelUrl: string;
+  /** Name shown on the boss bar, and in the seal prompt at the descent. */
+  title: string;
+  /**
+   * Patrol a ring around the anchor instead of hovering over it. It never
+   * leaves this ring — a carrier that chased would stop being a landmark.
+   */
+  roam?: { radius: number; speed: number; rise: number };
+  /** Lash out at a player who comes inside `range`. */
+  melee?: { range: number; damage: number; cooldown: number; windup: number };
+  /** Clip name patterns, matched against the model's own animation names. */
+  clips?: { idle?: RegExp; swim?: RegExp; fast?: RegExp; attack?: RegExp; death?: RegExp };
+  /** Orbiting shield nodes (defaults to the standard three). */
+  nodeCount?: number;
+  /** While this carrier lives, the zone's way down is sealed shut. */
+  sealsDescent?: boolean;
+  /** Body radius as a fraction of `size` (a squid is longer than it is wide). */
+  radiusFactor?: number;
+  /**
+   * Meshes to drop from the loaded model, by name or material name.
+   *
+   * Needed because asset packs ship cosmetics: the colossal squid arrives
+   * wearing a Christmas hat (`XmasHat_LowRes`), which is very funny exactly once
+   * and then is a Christmas hat on your boss for ever.
+   */
+  hideMeshes?: RegExp;
+}
+
 interface CarrierNode {
   mesh: Mesh;
   health: number;
@@ -132,12 +181,33 @@ export class SignalCarrier {
   onNodeDestroyed: (remaining: number) => void = () => {};
   /** Fired on each beacon pulse, with 0..1 proximity — drives the beacon audio. */
   onPulse: (proximity01: number) => void = () => {};
+  /** Fired when a melee variant lands a tentacle strike on the player. */
+  onStrike: (damage: number) => void = () => {};
+
+  /** The variant's display name, or the generic relay title. */
+  readonly title: string;
+  /** True if the way down stays shut while this carrier lives. */
+  readonly sealsDescent: boolean;
+  private readonly variant?: CarrierVariant;
+  private mixer: AnimationMixer | null = null;
+  private readonly actions = new Map<string, AnimationAction>();
+  private currentClip = '';
+  /** Ring patrol angle, radians (roaming variants only). */
+  private roamA = 0;
+  private strikeCd = 0;
+  /** Counts down through a wind-up; the blow lands when it reaches zero. */
+  private strikeT = 0;
+  private readonly anchor = new Vector3();
 
   private readonly group = new Group();
   private readonly bodyRoot = new Group();
   private readonly nodes: CarrierNode[] = [];
   private readonly nodeMats: MeshBasicMaterial[] = [];
   private readonly bodyMats: MeshStandardMaterial[] = [];
+  /** Unlit body materials, tinted directly since they have no emissive channel. */
+  private readonly unlitMats: MeshBasicMaterial[] = [];
+  /** Each unlit material's original colour, so a stage tint is a blend not a stomp. */
+  private readonly unlitBase: Color[] = [];
   private readonly disposables: { dispose(): void }[] = [];
 
   private glowSprite!: Sprite;
@@ -161,11 +231,15 @@ export class SignalCarrier {
     model: Object3D,
     size: number,
     maxHealth: number,
+    variant?: CarrierVariant,
   ) {
     const vis = size / CARRIER_SIZE;
     this.size = size;
     this.vis = vis;
-    this.radius = BODY_RADIUS * vis;
+    this.variant = variant;
+    this.title = variant?.title ?? 'Signal Carrier';
+    this.sealsDescent = variant?.sealsDescent ?? false;
+    this.radius = variant?.radiusFactor ? size * variant.radiusFactor : BODY_RADIUS * vis;
     this.hover = HOVER * vis;
     this.nodeOrbitR = NODE_ORBIT_R * vis;
     this.nodeRadius = Math.max(1.1, NODE_RADIUS * vis);
@@ -191,8 +265,9 @@ export class SignalCarrier {
     ceilingY: number,
     size = CARRIER_SIZE,
     maxHealth = MAX_HEALTH,
+    variant?: CarrierVariant,
   ): Promise<SignalCarrier> {
-    const gltf = await loader.loadGLB(carrierUrl);
+    const gltf = await loader.loadGLB(variant?.modelUrl ?? carrierUrl);
     const model = gltf.scene;
 
     // Normalize: the source is authored at an arbitrary scale far from the
@@ -205,31 +280,86 @@ export class SignalCarrier {
     wrap.scale.setScalar(scale);
     wrap.position.copy(box.getCenter(new Vector3()).multiplyScalar(-scale));
 
-    const carrier = new SignalCarrier(scene, wrap, size, maxHealth);
+    const carrier = new SignalCarrier(scene, wrap, size, maxHealth, variant);
     carrier.captureBodyMaterials(model);
-    // Hover clear of the seabed, but never so high that the body breaches.
+    // Hover clear of the seabed, but never so high that the body breaches. A
+    // roaming variant adds its own `rise` on top — it patrols ABOVE its anchor.
+    const lift = carrier.hover + (variant?.roam?.rise ?? 0);
     const topRoom = ceilingY - size * 0.55;
-    carrier.pos.copy(anchor).setY(Math.min(anchor.y + carrier.hover, topRoom));
+    carrier.anchor.copy(anchor);
+    carrier.pos.copy(anchor).setY(Math.min(anchor.y + lift, topRoom));
     carrier.baseY = carrier.pos.y;
     carrier.group.position.copy(carrier.pos);
+    if (variant?.clips && gltf.animations.length > 0) carrier.bindClips(model, gltf.animations, variant);
     carrier.buildBeacon();
     carrier.buildNodes();
     carrier.applyStage(0, true);
     return carrier;
   }
 
+  /**
+   * Wire up the model's animation clips by name.
+   *
+   * Matched by pattern rather than index because the source packs sixteen clips
+   * in authoring order, and hard-coding indices would silently play a death
+   * throe as an idle the first time the asset is re-exported.
+   */
+  private bindClips(model: Object3D, clips: AnimationClip[], variant: CarrierVariant): void {
+    this.mixer = new AnimationMixer(model);
+    for (const [state, re] of Object.entries(variant.clips ?? {})) {
+      if (!re) continue;
+      const clip = clips.find((c) => (re as RegExp).test(c.name));
+      if (!clip) continue;
+      const action = this.mixer.clipAction(clip);
+      // Attack and death play once and hold; the rest loop.
+      if (state === 'attack' || state === 'death') {
+        action.setLoop(LoopOnce, 1);
+        action.clampWhenFinished = true;
+      }
+      this.actions.set(state, action);
+    }
+    this.play('idle', 0);
+  }
+
+  /** Crossfade to a clip, ignoring the request if it is already running. */
+  private play(state: string, fade = 0.28): void {
+    if (this.currentClip === state) return;
+    const next = this.actions.get(state);
+    if (!next) return;
+    const prev = this.actions.get(this.currentClip);
+    next.reset();
+    next.enabled = true;
+    next.setEffectiveWeight(1);
+    next.play();
+    if (prev && fade > 0) prev.crossFadeTo(next, fade, false);
+    else if (prev) prev.stop();
+    this.currentClip = state;
+  }
+
   // ---- construction --------------------------------------------------------
 
   /** Grab the body's materials so damage stages can drive their emissive glow. */
   private captureBodyMaterials(model: Object3D): void {
+    const hide = this.variant?.hideMeshes;
     model.traverse((o) => {
       const mesh = o as Mesh;
       if (!mesh.isMesh) return;
       mesh.frustumCulled = false; // one landmark object; culling it costs more than it saves
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      if (hide && (hide.test(mesh.name) || mats.some((m) => m && hide.test((m as Material).name)))) {
+        mesh.visible = false;
+        return;
+      }
       for (const m of mats as Material[]) {
         const sm = m as MeshStandardMaterial;
         if (sm?.isMeshStandardMaterial) this.bodyMats.push(sm);
+        // Unlit bodies get tinted instead. The squid pack exports every part as
+        // MeshBasicMaterial, so the emissive path below binds to nothing and the
+        // damage stages would silently do nothing to it — the one visual cue
+        // that tells you a carrier is dying.
+        else if ((m as MeshBasicMaterial)?.isMeshBasicMaterial) {
+          this.unlitMats.push(m as MeshBasicMaterial);
+        }
       }
     });
   }
@@ -311,7 +441,8 @@ export class SignalCarrier {
     // ball and vanished into the beacon glow.
     const geo = new IcosahedronGeometry(this.nodeRadius, 0);
     this.disposables.push(geo);
-    for (let i = 0; i < NODE_COUNT; i++) {
+    const nodeCount = this.variant?.nodeCount ?? NODE_COUNT;
+    for (let i = 0; i < nodeCount; i++) {
       const mat = new MeshBasicMaterial({ color: 0xbdf0ff, fog: false, toneMapped: false });
       const mesh = new Mesh(geo, mat);
       mesh.frustumCulled = false;
@@ -322,16 +453,18 @@ export class SignalCarrier {
         mesh,
         health: this.nodeMaxHealth,
         alive: true,
-        phase: (i / NODE_COUNT) * Math.PI * 2,
+        phase: (i / nodeCount) * Math.PI * 2,
         yOff: (-2 + i * 2.4) * this.vis,
         pos: new Vector3(),
       });
     }
 
     // Tethers: one line segment per node (body center → node), positions
-    // rewritten in place each frame. One draw call for all three.
+    // rewritten in place each frame. One draw call for all of them. Sized off
+    // the node count actually built, not the constant — a variant may ask for
+    // more, and a short buffer would silently drop the extra tethers.
     const geoT = new BufferGeometry();
-    this.tetherPos = new Float32BufferAttribute(new Float32Array(NODE_COUNT * 6), 3);
+    this.tetherPos = new Float32BufferAttribute(new Float32Array(this.nodes.length * 6), 3);
     this.tetherPos.setUsage(DynamicDrawUsage); // rewritten in place every frame
     geoT.setAttribute('position', this.tetherPos);
     this.tetherMat = new LineBasicMaterial({
@@ -463,8 +596,10 @@ export class SignalCarrier {
     this.time += dt;
     if (this.staggerT > 0) this.staggerT -= dt;
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 2.2);
+    this.mixer?.update(dt);
 
     if (!this.alive) {
+      this.play('death', 0.2);
       // Death throes: the beacon collapses inward and the whole rig fades out.
       this.dyingT = Math.max(0, this.dyingT - dt);
       const k = this.dyingT / 1.6;
@@ -479,22 +614,82 @@ export class SignalCarrier {
     const stage = this.stage;
     if (stage !== this.lastStage) this.applyStage(stage, false);
 
-    // Semi-stationary: a slow hover bob and a lazy turn, so it reads as alive
-    // without ever leaving its anchor. Staggering makes it lurch.
     const stagger = this.staggerT > 0 ? 1 : 0;
-    this.pos.y = this.baseY + Math.sin(this.time * 0.5) * 1.1 + stagger * Math.sin(this.time * 26) * 0.5;
+    const roam = this.variant?.roam;
+    let faceYaw: number;
+
+    if (roam) {
+      // A patrol, not a chase. It circles its anchor for ever, and the radius
+      // breathes so the path never reads as a drawn circle. Deliberately never
+      // takes the player's position into account: this thing owns the way out,
+      // and the threat is that it is ALREADY there, not that it follows you.
+      this.roamA += (roam.speed / Math.max(roam.radius, 1)) * dt * (1 + stagger * 1.4);
+      const r = roam.radius * (0.82 + Math.sin(this.time * 0.23) * 0.18);
+      this.pos.x = this.anchor.x + Math.cos(this.roamA) * r;
+      this.pos.z = this.anchor.z + Math.sin(this.roamA) * r;
+      this.pos.y =
+        this.baseY + Math.sin(this.time * 0.41) * (roam.rise * 0.16) + stagger * Math.sin(this.time * 26) * 0.6;
+      // Lead with the direction of travel, except mid-strike, when it turns on
+      // whatever it is hitting.
+      faceYaw =
+        this.strikeT > 0
+          ? Math.atan2(playerPos.x - this.pos.x, playerPos.z - this.pos.z)
+          : Math.atan2(-Math.sin(this.roamA), -Math.cos(this.roamA)) + Math.PI / 2;
+    } else {
+      // Semi-stationary: a slow hover bob and a lazy turn, so it reads as alive
+      // without ever leaving its anchor. Staggering makes it lurch.
+      this.pos.y = this.baseY + Math.sin(this.time * 0.5) * 1.1 + stagger * Math.sin(this.time * 26) * 0.5;
+      // Face the player slowly — an eye that tracks you is worth the two lines.
+      faceYaw = Math.atan2(playerPos.x - this.pos.x, playerPos.z - this.pos.z);
+    }
     this.group.position.copy(this.pos);
-    // Face the player slowly — an eye that tracks you is worth the two lines.
-    _v.subVectors(playerPos, this.pos);
-    const wantYaw = Math.atan2(_v.x, _v.z);
-    let dY = wantYaw - this.bodyRoot.rotation.y;
+
+    let dY = faceYaw - this.bodyRoot.rotation.y;
     while (dY > Math.PI) dY -= Math.PI * 2;
     while (dY < -Math.PI) dY += Math.PI * 2;
-    this.bodyRoot.rotation.y += Math.max(-0.45 * dt, Math.min(0.45 * dt, dY));
+    const turn = roam ? 1.4 : 0.45;
+    this.bodyRoot.rotation.y += Math.max(-turn * dt, Math.min(turn * dt, dY));
     this.bodyRoot.rotation.z = Math.sin(this.time * 0.37) * 0.05;
 
+    this.updateMelee(dt, playerPos);
     this.updateNodes(dt);
     this.updateBeacon(dt, playerPos, stage);
+  }
+
+  /**
+   * The tentacle strike.
+   *
+   * A wind-up rather than an instant hit, and the damage is only dealt if the
+   * player is STILL in reach when the blow lands — so backing out of range is a
+   * real answer to it, and the animation is telling you the truth about when to
+   * move. Range is generous because the arms are long; it still never pursues.
+   */
+  private updateMelee(dt: number, playerPos: Vector3): void {
+    const m = this.variant?.melee;
+    if (!m) return;
+    if (this.strikeCd > 0) this.strikeCd -= dt;
+
+    if (this.strikeT > 0) {
+      this.strikeT -= dt;
+      if (this.strikeT <= 0) {
+        // Landed — but only on someone who stayed inside the arms.
+        if (playerPos.distanceTo(this.pos) <= m.range + this.radius) this.onStrike(m.damage);
+      }
+      return;
+    }
+
+    const near = playerPos.distanceTo(this.pos) <= m.range + this.radius;
+    if (near && this.strikeCd <= 0) {
+      this.strikeT = m.windup;
+      this.strikeCd = m.cooldown;
+      this.play('attack', 0.12);
+      return;
+    }
+    // Between strikes: swim when it is patrolling, idle when it is not, and
+    // switch to the fast cycle while something is close enough to be worth
+    // reacting to.
+    if (this.variant?.roam) this.play(near ? 'fast' : 'swim');
+    else this.play('idle');
   }
 
   private updateNodes(dt: number): void {
@@ -585,6 +780,14 @@ export class SignalCarrier {
       m.emissive.copy(this.stageColor);
       m.emissiveIntensity = 0.1 + stage * 0.42;
       m.needsUpdate = initial;
+    }
+    // Unlit bodies carry the same signal in their albedo. Blended rather than
+    // replaced, so the model's own texture still reads at every stage.
+    for (let i = 0; i < this.unlitMats.length; i++) {
+      if (initial && !this.unlitBase[i]) this.unlitBase[i] = this.unlitMats[i].color.clone();
+      const base = this.unlitBase[i];
+      if (!base) continue;
+      this.unlitMats[i].color.copy(base).lerp(this.stageColor, 0.12 + stage * 0.22);
     }
   }
 

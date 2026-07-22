@@ -29,6 +29,8 @@ export class PlayerAbility {
   private activeT = 0;
   /** Seconds of magnapinna suction left to run (see runSuction). */
   private suctionT = 0;
+  /** Seconds of anglerfish lure left to run (see runLure). */
+  private lureT = 0;
 
   /** Fired when an ability activates (its name) — for HUD feedback. */
   onActivate: (name: string) => void = () => {};
@@ -47,6 +49,7 @@ export class PlayerAbility {
     this.cooldownT = 0;
     this.activeT = 0;
     this.suctionT = 0;
+    this.lureT = 0;
   }
 
   /** True when the host actually has an ability to show. */
@@ -74,6 +77,7 @@ export class PlayerAbility {
     if (this.cooldownT > 0) this.cooldownT -= dt;
     if (this.activeT > 0) this.activeT -= dt;
     if (this.suctionT > 0) this.runSuction(dt);
+    if (this.lureT > 0) this.runLure(dt);
     if (!this.input.consumeAbility()) return;
     const a = this.fish.species.ability;
     if (a.kind === 'none' || this.cooldownT > 0) return;
@@ -230,6 +234,99 @@ export class PlayerAbility {
         this.sfx.possess();
         break;
       }
+      case 'lure': {
+        // The esca. Unlike the magnapinna's suction this is an AURA, not a cone:
+        // the angler does not chase, so its ability has to bring the sea to it.
+        // Everything caught is stunned for the whole duration, which also leaves
+        // it possession-ready — the slow body's answer to never catching anything.
+        this.lureT = duration;
+        this.combat.guard(0.6, duration); // it plants itself while the light burns
+        this.camera.punch(7);
+        this.sfx.stunHit();
+        break;
+      }
+      case 'slipstream': {
+        // The koi is already the fastest thing in the water; this is what it does
+        // when it stops holding back. No damage, no heal — pure velocity, plus
+        // i-frames for the whole run so a boost INTO a fight is survivable.
+        this.controller.boost(2.4, duration);
+        this.combat.iframes(duration);
+        this.ecosystem.alertPrey();
+        this.camera.punch(20);
+        this.sfx.biteSwing(1.1);
+        break;
+      }
+      case 'maelstrom': {
+        // A full sphere, not a cone: the horror thrashes, and reach is the point
+        // of wearing something this size. Everything edible in the sphere is
+        // taken, everything too big to swallow is badly hurt.
+        this.controller.getForward(FWD);
+        ORIGIN.copy(this.controller.pos);
+        const eatMax = this.fish.length / EAT_SIZE_RATIO;
+        const res = this.ecosystem.playerBiteCone(
+          ORIGIN,
+          FWD,
+          this.fish.length * 1.6,
+          -1, // -1 = no cone at all; the whole sphere is in range
+          eatMax,
+          130,
+          new Set<Creature>(),
+        );
+        if (res.biomass > 0) this.combat.onFeed(res.biomass);
+        if (res.eaten > 0) this.combat.heal(14 * res.eaten);
+        this.combat.guard(0.5, duration);
+        this.camera.punch(26);
+        this.sfx.carrierDeath();
+        break;
+      }
+      case 'gaze': {
+        // The watcher's eye. Everything with line of sight to it simply stops —
+        // hunters included, which is what makes this a defensive tool as much as
+        // an opening. Blinding them too means they do not resume mid-stare.
+        ORIGIN.copy(this.controller.pos);
+        const reach = this.fish.length * 7;
+        const list = this.ecosystem.list;
+        let held = 0;
+        for (let i = 0; i < list.length; i++) {
+          const c = list[i];
+          if (!c.alive) continue;
+          if (c.pos.distanceToSquared(ORIGIN) > reach * reach) continue;
+          c.stun(duration);
+          c.vel.multiplyScalar(0.1);
+          held++;
+        }
+        this.ecosystem.blindHunters(duration);
+        if (held > 0) this.camera.punch(12);
+        this.sfx.possess();
+        break;
+      }
+    }
+  }
+
+  /**
+   * The angler's lure, run continuously while lit.
+   *
+   * Deliberately a sphere around the host rather than a cone in front of it: the
+   * whole identity of this body is that it is too slow to chase, so the ability
+   * has to work in every direction or it would just be a worse suction.
+   */
+  private runLure(dt: number): void {
+    this.lureT -= dt;
+    ORIGIN.copy(this.controller.pos);
+    const reach = this.fish.length * 6.5;
+    const list = this.ecosystem.list;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (!c.alive) continue;
+      PULL.subVectors(ORIGIN, c.pos);
+      const d = PULL.length();
+      if (d > reach || d < 1e-3) continue;
+      // Gentler than the magnapinna's haul — this is a fascination, not a vacuum,
+      // and prey should arrive swimming rather than be fired into your mouth.
+      const grip = 1 - d / reach;
+      c.pos.addScaledVector(PULL.normalize(), (6 + grip * 16) * dt);
+      c.vel.multiplyScalar(0.9);
+      c.stun(0.3);
     }
   }
 }

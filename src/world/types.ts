@@ -2,6 +2,7 @@ import type { PerspectiveCamera, Texture, Vector3, WebGLRenderer } from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type { PopEntry } from '../data/creatures';
 import type { BoxCollider } from './Solids';
+import type { CarrierVariant } from '../entities/SignalCarrier';
 
 /**
  * The slice of AssetLoader a zone needs for its dressing pass. Declared
@@ -53,6 +54,15 @@ export interface TerrainLike {
    * camera, and creatures are all held under the same vault they can see.
    */
   ceilingAt?(x: number, z: number): number;
+}
+
+/** One Signal Carrier, fully described by the zone that places it. */
+export interface CarrierSpec {
+  anchor: Vector3;
+  size: number;
+  health: number;
+  /** Omit for the standard hovering eye relay. */
+  variant?: CarrierVariant;
 }
 
 /** Axis-aligned playable box; the swim controller pushes back outside it. */
@@ -146,6 +156,21 @@ export interface Zone {
    * Optional — a default is used when a zone with carriers doesn't specify.
    */
   getCarrierConfig?(): { size: number; health: number };
+  /**
+   * Fully-specified carriers, when a zone needs them to differ from each other.
+   *
+   * `getCarrierAnchors` + `getCarrierConfig` describe N identical relays, which
+   * is all the first two zones ever want. The Fallen Kingdom pairs a standard
+   * relay with a colossal squid twice its size that patrols and bites, so it
+   * needs to speak per-carrier. Zones that implement this are built from it and
+   * the anchors/config pair is ignored.
+   */
+  getCarrierSpecs?(): CarrierSpec[];
+  /**
+   * Show or hide whatever the zone uses to seal its descent. Called whenever the
+   * sealing carrier's state changes, and once when the zone is built.
+   */
+  setDescentSealed?(sealed: boolean): void;
 
   /** Null when this zone has no further descent (dead-end / final). */
   getDescentInfo(): DescentInfo | null;
